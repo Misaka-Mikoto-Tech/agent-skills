@@ -1,0 +1,6 @@
+interface:
+  display_name: "Bilibili Page Reader"
+  short_description: "Read Bilibili pages, subtitles, danmaku, and visible comments."
+  default_prompt: "Use $bilibili-page-reader to read the current Bilibili video page and extract the visible comments, AI subtitles, or danmaku."
+policy:
+  allow_implicit_invocation: true
