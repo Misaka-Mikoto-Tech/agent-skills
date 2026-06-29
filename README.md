@@ -10,6 +10,11 @@ A personal collection of reusable AI agent skills and MCP-related utilities.
 
 ### Codex
 
+Recommended shell: PowerShell 7+ (`pwsh`). The `powershell-safe-invocation` skill is written for modern PowerShell behavior, especially native argument passing.
+
+- Install guide: [Install PowerShell](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell)
+- Releases: [PowerShell GitHub Releases](https://github.com/PowerShell/PowerShell/releases)
+
 ```powershell
 $repo = (Get-Location).Path
 $target = "$env:USERPROFILE\.codex\skills"
