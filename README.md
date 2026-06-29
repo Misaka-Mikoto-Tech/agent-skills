@@ -2,7 +2,7 @@
 
 A personal collection of reusable AI agent skills and MCP-related utilities.
 
-这个仓库用于收集我日常使用中沉淀下来的 agent skills：包括网页读取、命令行调用规范、自动化流程、工具集成经验等。内容以可直接复制使用的 `SKILL.md` 为主，后续也可能加入 MCP server 配置和示例。
+这个仓库用于收集本人日常使用中沉淀下来的 agent skills：包括网页读取、命令行调用规范、自动化流程、工具集成经验等。内容以可直接复制使用的 `SKILL.md` 为主，后续也可能加入 MCP server 配置和示例。
 
 ## Install
 
