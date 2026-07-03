@@ -16,6 +16,15 @@ $PSVersionTable.PSVersion
 $PSNativeCommandArgumentPassing
 ```
 
+When verifying Windows PowerShell from Linux/zsh over SSH, do not put
+`$PSVersionTable` in an inline double-quoted `-Command`; an outer shell can
+expand `$PSVersionTable` before `pwsh.exe` receives it. Use stdin script mode:
+
+```bash
+printf '%s\n' '$PSVersionTable.PSVersion' '$PSNativeCommandArgumentPassing' |
+  ssh <windows-host> 'pwsh.exe -NoLogo -NoProfile -NonInteractive -File -'
+```
+
 Do not assume installing PowerShell 7 makes `powershell.exe` use PowerShell 7:
 
 - `pwsh.exe` = PowerShell 7
@@ -77,6 +86,20 @@ Do not use `$LASTEXITCODE` to test a PowerShell cmdlet. Use terminating errors:
 $ErrorActionPreference = 'Stop'
 ```
 
+## Binary Data
+
+Do not pipe binary data through PowerShell text cmdlets or formatted output.
+For device files, prefer native file-producing commands such as `adb pull`:
+
+```powershell
+$adb = 'C:\Tools\platform-tools\adb.exe'
+$out = Join-Path $env:TEMP 'device-dump.bin'
+& $adb -s '<device-serial>' pull '/dev/example-binary' $out
+exit $LASTEXITCODE
+```
+
+If PowerShell must handle bytes directly, use `[System.IO.File]` byte APIs.
+
 ## Complex Commands
 
 Avoid deeply quoted commands such as:
@@ -95,6 +118,18 @@ pwsh.exe -NoLogo -NoProfile -NonInteractive -File script.ps1
 ```
 
 Prefer `-File` over `-Command` for anything beyond a short, simple expression.
+
+For loops, deadlines, polling, retries, or script state such as `$deadline`,
+write a `.ps1` file and call it with `pwsh.exe -File`; do not pass those
+variables through Linux/zsh -> ssh -> PowerShell inline `-Command`:
+
+```powershell
+param([int]$WaitSeconds = 90)
+$deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+while ([DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Seconds 1
+}
+```
 
 Do not add `-ExecutionPolicy Bypass` unless execution policy is actually blocking a trusted script.
 

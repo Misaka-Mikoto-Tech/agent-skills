@@ -18,6 +18,15 @@ $PSVersionTable
 $PSNativeCommandArgumentPassing
 ```
 
+From Linux/zsh to a Windows SSH host, avoid inline double-quoted `-Command`
+for this probe because `$PSVersionTable` can be expanded by the wrong shell
+before `pwsh.exe` receives it. Use stdin script mode:
+
+```bash
+printf '%s\n' '$PSVersionTable.PSVersion' '$PSNativeCommandArgumentPassing' |
+  ssh <windows-host> 'pwsh.exe -NoLogo -NoProfile -NonInteractive -File -'
+```
+
 PowerShell 7.3 and later use improved native argument passing. On Windows, the normal default is commonly:
 
 ```text
@@ -78,6 +87,36 @@ Run it with:
 
 ```text
 pwsh.exe -NoLogo -NoProfile -NonInteractive -File script.ps1
+```
+
+For stateful polling, keep variables such as `$deadline` inside the script
+that PowerShell executes:
+
+```powershell
+param(
+    [string]$DeviceSerial,
+    [int]$WaitSeconds = 90
+)
+
+$tool = 'C:\Tools\platform-tools\adb.exe'
+$deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+
+while ([DateTime]::UtcNow -lt $deadline) {
+    & $tool -s $DeviceSerial get-state *> $null
+    if ($LASTEXITCODE -eq 0) {
+        exit 0
+    }
+    Start-Sleep -Seconds 1
+}
+
+exit 124
+```
+
+Invoke that script as a file with explicit arguments:
+
+```bash
+scp wait-device.ps1 <windows-host>:
+ssh <windows-host> 'pwsh.exe -NoLogo -NoProfile -NonInteractive -File wait-device.ps1 -DeviceSerial <device-serial> -WaitSeconds 90'
 ```
 
 ## 3. Native Argument Arrays
@@ -529,6 +568,24 @@ For binary data, use byte APIs:
 ```
 
 Do not use text cmdlets for binary content.
+
+For device-side binary files, prefer a native file transfer that writes bytes
+directly:
+
+```powershell
+$adb = 'C:\Tools\platform-tools\adb.exe'
+$out = Join-Path $env:TEMP 'device-dump.bin'
+& $adb -s '<device-serial>' pull '/dev/example-binary' $out
+exit $LASTEXITCODE
+```
+
+Avoid piping binary output through text-oriented cmdlets:
+
+```powershell
+# Avoid for binary data
+& $adb -s '<device-serial>' shell 'cat /dev/example-binary' |
+    Set-Content -LiteralPath $out
+```
 
 ## 14. Stop-Parsing Token
 
