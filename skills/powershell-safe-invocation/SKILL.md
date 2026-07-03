@@ -1,6 +1,6 @@
 ---
 name: powershell-safe-invocation
-description: Use when writing or running PowerShell on Windows, especially native programs, quoted paths, escaping, pwsh, Start-Process, file operations, or shell troubleshooting.
+description: Use when writing or running PowerShell on Windows, as well as execute remote command (e.g., ssh) on a Windows host. Typical scenario includes writing Windows native programs, quoted paths, escaping, pwsh, Start-Process, file operations, or shell troubleshooting.
 ---
 
 # PowerShell Safe Invocation
@@ -16,6 +16,15 @@ $PSVersionTable.PSVersion
 $PSNativeCommandArgumentPassing
 ```
 
+When verifying Windows PowerShell from Linux/zsh over SSH, do not put
+`$PSVersionTable` in an inline double-quoted `-Command`; an outer shell can
+expand `$PSVersionTable` before `pwsh.exe` receives it. Use stdin script mode:
+
+```bash
+printf '%s\n' '$PSVersionTable.PSVersion' '$PSNativeCommandArgumentPassing' |
+  ssh <windows-host> 'pwsh.exe -NoLogo -NoProfile -NonInteractive -File -'
+```
+
 Do not assume installing PowerShell 7 makes `powershell.exe` use PowerShell 7:
 
 - `pwsh.exe` = PowerShell 7
@@ -29,13 +38,13 @@ Use:
 
 ```powershell
 $exe = 'C:\Path With Spaces\tool.exe'
-$args = @(
+$argList = @(
     '--input'
     'C:\Data Folder\input.json'
     '--flag'
 )
 
-& $exe @args
+& $exe @argList
 
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
@@ -46,11 +55,13 @@ if ($exitCode -ne 0) {
 Rules:
 
 - Treat every native argument as one array item.
+- Do not name native argument arrays or function parameters `$args` or `$Args`; `$args` is a PowerShell automatic variable.
 - Invoke executable paths stored in variables with `&`.
 - Capture `$LASTEXITCODE` immediately.
 - Do not use `Invoke-Expression`.
 - Do not add a `cmd.exe /c` layer merely to launch an executable.
 - Do not use Bash-style `\"` escaping in PowerShell.
+- Avoid `.cmd` or `.bat` compiler wrappers when quote-sensitive macro definitions, attributes, or linker flags must be preserved; prefer the real executable, a response file, or a source-level default.
 
 ## Cmdlets
 
@@ -75,6 +86,20 @@ Do not use `$LASTEXITCODE` to test a PowerShell cmdlet. Use terminating errors:
 $ErrorActionPreference = 'Stop'
 ```
 
+## Binary Data
+
+Do not pipe binary data through PowerShell text cmdlets or formatted output.
+For device files, prefer native file-producing commands such as `adb pull`:
+
+```powershell
+$adb = 'C:\Tools\platform-tools\adb.exe'
+$out = Join-Path $env:TEMP 'device-dump.bin'
+& $adb -s '<device-serial>' pull '/dev/example-binary' $out
+exit $LASTEXITCODE
+```
+
+If PowerShell must handle bytes directly, use `[System.IO.File]` byte APIs.
+
 ## Complex Commands
 
 Avoid deeply quoted commands such as:
@@ -94,12 +119,82 @@ pwsh.exe -NoLogo -NoProfile -NonInteractive -File script.ps1
 
 Prefer `-File` over `-Command` for anything beyond a short, simple expression.
 
+For loops, deadlines, polling, retries, or script state such as `$deadline`,
+write a `.ps1` file and call it with `pwsh.exe -File`; do not pass those
+variables through Linux/zsh -> ssh -> PowerShell inline `-Command`:
+
+```powershell
+param([int]$WaitSeconds = 90)
+$deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+while ([DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Seconds 1
+}
+```
+
 Do not add `-ExecutionPolicy Bypass` unless execution policy is actually blocking a trusted script.
+
+## Cross-Shell Remote Invocation
+
+When PowerShell invokes a tool that executes another shell, treat it as a cross-shell invocation. Examples include `ssh`, `docker exec`, `kubectl exec`, `adb shell`, and cloud CLI remote-command features.
+
+
+Assume the command may pass through multiple parsers:
+
+```text
+PowerShell -> native argument passing -> tool transport -> target shell -> optional nested parser
+```
+
+Rules:
+
+- Keep launcher arguments as separate PowerShell arguments.
+- Do not put variables intended for the target shell, such as `$PWD`, `$HOME`, `$PATH`, `$LD_LIBRARY_PATH`, or `$?`, inside a PowerShell double-quoted command string.
+- For target-shell logic longer than one short literal command, use a single-quoted here-string and pipe it to the target shell, or write a script file and execute that file.
+- Define target-shell variables inside the target script, not in the outer PowerShell string.
+- Pass local values as explicit arguments, environment variables, or data files rather than interpolating them into target-shell source.
+- For nested commands containing semicolon-separated environment variables, redirection, pipelines, or several exports, write a short script for the innermost shell and run that script.
+- For remote paths built from PowerShell variables and followed by `:`, use braces: `"${host}:/path"`.
+- In reusable documentation or shared scripts, use placeholder variables or environment variables instead of real host names, user names, serials, IP addresses, or local absolute paths.
+- Do not append `; true` when the exit status matters. Return or print the real exit code instead.
+
+Preferred pattern:
+
+```powershell
+$remoteHost = '<remote-host>'
+
+$script = @'
+set -euo pipefail
+
+cd /opt/project
+printf 'target pwd: %s\n' "$PWD"
+'@
+
+$sshArgs = @('-o', 'ConnectTimeout=30', $remoteHost, 'tr -d ''\r'' | bash -s')
+($script -replace "`r", '') | & ssh @sshArgs
+
+$exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
+    throw "remote command failed with exit code $exitCode"
+}
+```
+
+## Generated Scripts And Cross-Language Patches
+
+When PowerShell sends code that generates or patches another language, treat the generated language as another parser layer.
+
+Rules:
+
+- Do not patch shell scripts by matching multiline strings that contain trailing `\` continuations.
+- Prefer line-based insertion, structured parsing, or a template file over hand-escaped multiline replacements.
+- When Python must generate shell text, build output as a list of lines and join with `'\n'`.
+- After modifying generated shell scripts, run `bash -n` and a targeted content check before executing them.
+- After modifying generated Python, run `python -m py_compile` when applicable.
 
 ## Strings And Multiline Code
 
 - Use single quotes for literal strings and paths.
 - Use double quotes only when PowerShell expansion is needed.
+- Use braces when a variable is followed by `:` or identifier-like text, especially remote paths: `"${host}:/path"`.
+- Avoid PowerShell automatic variable names such as `$args`, `$input`, `$PID`, `$HOME`, `$PWD`, `$PSHOME`, and `$LASTEXITCODE` for parameters, local variables, and temporary script state. Variable names are case-insensitive, so `$Args` is the same name as `$args`.
 - Avoid backtick line continuation; use arrays, hashtables, splatting, parentheses, or script blocks.
 - For JSON, create objects and use `ConvertTo-Json`; do not hand-escape JSON.
 - Use single-quoted here-strings for literal multiline text.
@@ -110,12 +205,14 @@ Do not add `-ExecutionPolicy Bypass` unless execution policy is actually blockin
 For normal foreground execution, use:
 
 ```powershell
-& $exe @args
+& $exe @argList
 ```
 
 Use `Start-Process` only for elevation, new/hidden windows, detached launch, or shell behavior.
 
 `Start-Process -ArgumentList` joins values into a command-line string and is not a reliable structured-argument API.
+
+`ProcessStartInfo.ArgumentList` is available in PowerShell 7 / modern .NET. If Windows PowerShell 5.1 is explicitly required, prefer launching the script under `pwsh.exe`; otherwise `ProcessStartInfo.Arguments` is a single command-line string and must be quoted as one Windows command line. Do not use a simple join for arguments that may contain spaces, quotes, or empty strings.
 
 When a separate process is required and arguments are complex, use:
 
@@ -124,7 +221,7 @@ $psi = [System.Diagnostics.ProcessStartInfo]::new()
 $psi.FileName = $exe
 $psi.UseShellExecute = $false
 
-foreach ($arg in $args) {
+foreach ($arg in $argList) {
     $psi.ArgumentList.Add($arg)
 }
 
@@ -150,11 +247,12 @@ Before recursive delete, move, or overwrite:
 Choose the simplest safe option:
 
 1. PowerShell cmdlet.
-2. `& $exe @args`.
+2. `& $exe @argList`.
 3. Temporary `.ps1` file with `pwsh.exe -File`.
-4. `ProcessStartInfo.ArgumentList`.
-5. `Start-Process` when its special behavior is required.
-6. `cmd.exe /c` only when cmd semantics are required.
-7. `Invoke-Expression` only as a tightly controlled last resort.
+4. Single-quoted here-string piped to the target shell for cross-shell remote invocation.
+5. `ProcessStartInfo.ArgumentList`.
+6. `Start-Process` when its special behavior is required.
+7. `cmd.exe /c` only when cmd semantics are required.
+8. `Invoke-Expression` only as a tightly controlled last resort.
 
 For uncommon cases and complete examples, read `reference.md`.
