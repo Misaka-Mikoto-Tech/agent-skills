@@ -188,6 +188,31 @@ catch {
 
 `$LASTEXITCODE` is for native commands and script exit codes, not normal cmdlet success.
 
+### Parameter values that are expressions
+
+PowerShell command arguments are parsed in argument mode. A range or arithmetic expression after a parameter name may be treated as a literal argument instead of the expression you intended.
+
+Avoid:
+
+```powershell
+Get-Content -LiteralPath $path | Select-Object -Index 100..120
+```
+
+Use parentheses or assign first:
+
+```powershell
+Get-Content -LiteralPath $path | Select-Object -Index (100..120)
+
+$lineRange = 100..120
+Get-Content -LiteralPath $path | Select-Object -Index $lineRange
+```
+
+The same habit helps with arithmetic and other computed values:
+
+```powershell
+Get-ChildItem -LiteralPath $root | Select-Object -First ($count + 1)
+```
+
 ## 5. String And Escape Rules
 
 Literal path:
@@ -282,7 +307,7 @@ Name: $name
 "@
 ```
 
-The closing terminator must appear alone at the start of a line.
+The opening `@'` or `@"` must be the last tokens on its line, and the closing terminator must appear alone at the start of a line.
 
 Do not use Bash heredocs in PowerShell:
 
@@ -292,6 +317,12 @@ python - <<'PY'
 ```
 
 Use a temporary `.py` file or a PowerShell here-string piped to the program instead.
+
+```powershell
+@'
+print("hello from stdin")
+'@ | python -
+```
 
 For JSON, prefer serialization:
 
@@ -322,11 +353,14 @@ Use `Start-Process` only when you need:
 Simple example:
 
 ```powershell
-$process = Start-Process `
-    -FilePath $exe `
-    -ArgumentList '--mode test' `
-    -Wait `
-    -PassThru
+$startParams = @{
+    FilePath     = $exe
+    ArgumentList = '--mode test'
+    Wait         = $true
+    PassThru     = $true
+}
+
+$process = Start-Process @startParams
 
 if ($process.ExitCode -ne 0) {
     throw "Process failed with exit code $($process.ExitCode)"
@@ -569,6 +603,7 @@ Common symptoms:
 | --- | --- | --- |
 | `$p` or `$env:NAME` disappears in an inner `-Command` | Outer PowerShell expanded the variable first | Use an outer single-quoted command or a `.ps1` file |
 | `python - <<'PY'` fails with parser errors | Bash heredoc syntax was used in PowerShell | Use a temporary script or PowerShell here-string |
+| `-Index 100..120` fails to bind or behaves literally | Parameter value expression was not grouped | Use `-Index (100..120)` or assign the range first |
 | `X:\...` works interactively but not in automation | Mapped drive is not visible to this user/session | `whoami`, `Get-PSDrive`, ask for UNC or switch execution mode |
 | A known cmdlet is missing | Module path or active shell differs from expectation | `$PSVersionTable`, `$env:PSModulePath`, `Get-Module -ListAvailable` |
 | A cmdlet parameter is rejected | PowerShell 5.1/7 parameter-set difference | `Get-Command <cmdlet> -Syntax` |

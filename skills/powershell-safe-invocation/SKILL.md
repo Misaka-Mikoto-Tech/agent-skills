@@ -76,6 +76,8 @@ Do not use `$LASTEXITCODE` to test a PowerShell cmdlet. Use terminating errors:
 $ErrorActionPreference = 'Stop'
 ```
 
+Wrap expressions passed as parameter values in parentheses or assign them first: use `Select-Object -Index (100..120)`, not `-Index 100..120`.
+
 ## Complex Commands
 
 Avoid deeply quoted commands such as:
@@ -112,7 +114,7 @@ If the command has to cross multiple interpreters or wrappers, stop and write a 
 - Avoid backtick line continuation; use arrays, hashtables, splatting, parentheses, or script blocks.
 - Do not use Bash heredocs such as `python - <<'PY'`; PowerShell parses `<` differently. Use a temporary script file or a PowerShell here-string piped to the program.
 - For JSON, create objects and use `ConvertTo-Json`; do not hand-escape JSON.
-- Use single-quoted here-strings for literal multiline text.
+- Use single-quoted here-strings for literal multiline text: put no characters after opening `@'`, and close with `'@` alone at the start of a line.
 - Specify text encoding explicitly when another tool consumes the file.
 
 ## Start-Process
