@@ -213,6 +213,38 @@ The same habit helps with arithmetic and other computed values:
 Get-ChildItem -LiteralPath $root | Select-Object -First ($count + 1)
 ```
 
+### Statement output and pipelines
+
+PowerShell statements such as `foreach (...) { ... }` are not pipeline expressions. A pipe immediately after the closing brace can be parsed as an empty pipeline element.
+
+Avoid:
+
+```powershell
+foreach ($file in $files) {
+    [pscustomobject]@{ File = $file }
+} | Format-Table -AutoSize
+```
+
+Use a variable when the loop is naturally statement-shaped:
+
+```powershell
+$rows = foreach ($file in $files) {
+    [pscustomobject]@{ File = $file }
+}
+
+$rows | Format-Table -AutoSize
+```
+
+Or use `ForEach-Object` when the input is already a pipeline:
+
+```powershell
+$files |
+    ForEach-Object {
+        [pscustomobject]@{ File = $_ }
+    } |
+    Format-Table -AutoSize
+```
+
 ## 5. String And Escape Rules
 
 Literal path:
@@ -604,6 +636,7 @@ Common symptoms:
 | `$p` or `$env:NAME` disappears in an inner `-Command` | Outer PowerShell expanded the variable first | Use an outer single-quoted command or a `.ps1` file |
 | `python - <<'PY'` fails with parser errors | Bash heredoc syntax was used in PowerShell | Use a temporary script or PowerShell here-string |
 | `-Index 100..120` fails to bind or behaves literally | Parameter value expression was not grouped | Use `-Index (100..120)` or assign the range first |
+| `foreach (...) { ... } | ...` reports an empty pipe element | Statement syntax was piped directly | Assign the loop output first or use `ForEach-Object` |
 | `X:\...` works interactively but not in automation | Mapped drive is not visible to this user/session | `whoami`, `Get-PSDrive`, ask for UNC or switch execution mode |
 | A known cmdlet is missing | Module path or active shell differs from expectation | `$PSVersionTable`, `$env:PSModulePath`, `Get-Module -ListAvailable` |
 | A cmdlet parameter is rejected | PowerShell 5.1/7 parameter-set difference | `Get-Command <cmdlet> -Syntax` |

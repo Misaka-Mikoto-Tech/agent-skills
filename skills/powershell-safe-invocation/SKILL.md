@@ -78,6 +78,8 @@ $ErrorActionPreference = 'Stop'
 
 Wrap expressions passed as parameter values in parentheses or assign them first: use `Select-Object -Index (100..120)`, not `-Index 100..120`.
 
+Do not pipe directly from statement syntax such as `foreach (...) { ... } | ...`; assign the statement output first or use the pipeline cmdlet `ForEach-Object`.
+
 ## Complex Commands
 
 Avoid deeply quoted commands such as:
