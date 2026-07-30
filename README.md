@@ -6,9 +6,9 @@ A personal collection of reusable AI agent skills and MCP-related utilities.
 
 ## 安装
 
-复制需要的 skill 到你的 agent 技能目录即可。
+复制需要的 skill 到通用的 `.agents/skills` 技能目录即可，支持该目录的 agent 可以共享同一份安装。
 
-### Codex
+### 通用安装
 
 推荐使用 PowerShell 7+ (`pwsh`)。`powershell-safe-invocation` skill 针对现代 PowerShell 行为编写，尤其关注原生命令参数传递、路径、引号、编码和进程启动。
 
@@ -17,16 +17,17 @@ A personal collection of reusable AI agent skills and MCP-related utilities.
 
 ```powershell
 $repo = (Get-Location).Path
-$target = "$env:USERPROFILE\.codex\skills"
+$target = "$env:USERPROFILE\.agents\skills"
 
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 Copy-Item -LiteralPath "$repo\skills\bilibili-page-reader" -Destination $target -Recurse -Force
 Copy-Item -LiteralPath "$repo\skills\powershell-safe-invocation" -Destination $target -Recurse -Force
+Copy-Item -LiteralPath "$repo\skills\locus-unity-bridge" -Destination $target -Recurse -Force
 ```
 
-### 其他 agent
+### 自定义技能目录
 
-如果你的 agent 使用其他技能目录，例如 `~/.agents/skills`，把 `$target` 改成对应路径即可。
+如果你的 agent 不支持 `~/.agents/skills`，把 `$target` 改成它使用的技能目录即可。
 
 ## bilibili-page-reader 的工作环境与依赖
 
@@ -48,11 +49,18 @@ Copy-Item -LiteralPath "$repo\skills\powershell-safe-invocation" -Destination $t
 
 更具体的执行步骤、兜底策略和常见问题写在 `skills/bilibili-page-reader/SKILL.md` 中。
 
+## locus-unity-bridge 的工作环境与依赖
+
+`locus-unity-bridge` 用于通过 [Locus](https://github.com/r1n7aro/Locus) 检测并控制真实 Unity Editor，运行环境是 Windows 和 PowerShell 7。实际连接需要目标 Unity 项目已经安装 Locus package，并启用对应项目的 Bridge。
+
+skill 会先通过 `probe` 区分缺少 package、Bridge 未启用和 Unity 不可达等状态；缺少 package 时只提供诊断，不会自动安装或修改项目。
+
 ## 可用 Skills
 
 | Skill | 说明 |
 | --- | --- |
 | [`bilibili-page-reader`](skills/bilibili-page-reader/) | 读取 Bilibili 视频页，包括投稿字幕、弹幕摘要、评论；无字幕时可通过 FunASR 下载音频并转写。 |
+| [`locus-unity-bridge`](skills/locus-unity-bridge/) | 通过 Locus 检测并控制真实 Unity Editor，支持项目/package/Bridge 诊断、C# 执行和脚本重新编译。 |
 | [`powershell-safe-invocation`](skills/powershell-safe-invocation/) | Windows agent 的安全 PowerShell 调用规范，覆盖原生命令参数、路径、引号、编码和进程启动。 |
 
 ## 仓库结构
