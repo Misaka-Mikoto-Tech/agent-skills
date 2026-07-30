@@ -1,0 +1,4 @@
+interface:
+  display_name: "Locus Unity Bridge"
+  short_description: "Control Unity safely through the Locus named-pipe bridge"
+  default_prompt: "Use $locus-unity-bridge to probe this Unity project and safely interact with its Locus bridge."
