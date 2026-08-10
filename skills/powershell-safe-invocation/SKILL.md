@@ -117,7 +117,15 @@ If the command has to cross multiple interpreters or wrappers, stop and write a 
 - Do not use Bash heredocs such as `python - <<'PY'`; PowerShell parses `<` differently. Use a temporary script file or a PowerShell here-string piped to the program.
 - For JSON, create objects and use `ConvertTo-Json`; do not hand-escape JSON.
 - Use single-quoted here-strings for literal multiline text: put no characters after opening `@'`, and close with `'@` alone at the start of a line.
-- Specify text encoding explicitly when another tool consumes the file.
+
+## Encoding
+
+PowerShell 7 defaults to UTF-8 without BOM for text output; Windows PowerShell 5.1 defaults vary by cmdlet.
+
+- For a new text file consumed by another tool, specify its required encoding explicitly (usually `utf8`).
+- Before changing an existing text file, identify and preserve its existing encoding. Do not silently convert GBK, UTF-16, or BOM-sensitive files; if the encoding is unclear, inspect or ask.
+- Do not set `Console.InputEncoding` or `Console.OutputEncoding` by default. Set them only for a confirmed terminal or native-program encoding mismatch; `$OutputEncoding` instead controls PowerShell text sent to native programs.
+- Do not apply text encoding options to binary files. Use byte APIs for binary data.
 
 ## Start-Process
 
