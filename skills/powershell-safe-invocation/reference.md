@@ -497,7 +497,7 @@ Never use it with untrusted or loosely generated input.
 
 ## 12. File And Path Safety
 
-Use `-LiteralPath` for real paths:
+Use `-LiteralPath` for concrete paths when the cmdlet supports it:
 
 ```powershell
 Get-Item -LiteralPath $path
@@ -505,7 +505,7 @@ Copy-Item -LiteralPath $source -Destination $destination
 Remove-Item -LiteralPath $path
 ```
 
-Use `-Path` only when wildcard expansion is intentional.
+For a cmdlet that exposes only `-Path`, such as `New-Item`, use `-Path` with the concrete target. When unsure which path parameters are supported, check `Get-Command <cmdlet> -Syntax`.
 
 For path construction:
 

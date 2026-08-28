@@ -68,7 +68,7 @@ $params = @{
 Copy-Item @params
 ```
 
-Use `-LiteralPath` for real paths unless wildcard expansion is intentional.
+Use `-LiteralPath` for concrete paths when the cmdlet supports it. For cmdlets that expose only `-Path`, such as `New-Item`, use `-Path`; when unsure, check `Get-Command <cmdlet> -Syntax`.
 
 Do not use `$LASTEXITCODE` to test a PowerShell cmdlet. Use terminating errors:
 
