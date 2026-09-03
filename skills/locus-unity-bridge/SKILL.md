@@ -33,6 +33,21 @@ for authorization if setup changes are required.
        -Command probe -ProjectPath 'E:\Source\SomeUnityProject'
    ```
 
+## Multiple workspaces
+
+Locus can keep Unity connections for multiple projects and Git worktrees in
+one desktop instance. Select the target by passing its exact Unity root as
+`-ProjectPath` on **every** command; that root is the bridge identity.
+
+- Each distinct project or worktree derives a separate native pipe from its
+  normalized root path (or uses that project's marker-specified pipe).
+- Do not invent or send an `InstanceName`, editor-instance ID, or other
+  selector: the Unity bridge protocol exposes none. The client already targets
+  the intended workspace through `-ProjectPath`.
+- Two Unity Editors opened on the same project root are not independently
+  selectable by this bridge. Probe the intended root and operate only after it
+  reports `connected`.
+
 3. Read the returned `Status`:
 
    | Status | Meaning and next action |
