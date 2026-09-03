@@ -88,6 +88,27 @@ Send a protocol message:
     -MessageType status -Message ''
 ```
 
+## Read-only diagnostics
+
+Use a protocol query before `execute` when it directly answers the diagnostic
+question. These are the only internal message types this skill treats as a
+curated interface; do not enumerate or guess other plugin messages.
+
+| Need | Message type | Message |
+|---|---|---|
+| Confirm the Editor state and active scene | `status` | Empty string |
+| Diagnose Console errors or warnings | `unity_get_console_log` | `{"levels":["error","warn"],"limit":20}` |
+
+`unity_get_console_log` returns a JSON payload inside the response envelope's
+`message` field. Parse that payload before using it. It groups identical
+entries and reports their `count`, `matchedCount`, and `truncated` state; begin
+with the bounded error/warning query above and raise `limit` only when needed.
+
+`get_console_text` is a compatibility snapshot, not a default diagnostic
+route: it can contain a large volume of text and needlessly consume context.
+Use it only when the user needs the complete Console text and the structured
+query is insufficient.
+
 Request compilation and wait across domain reload:
 
 ```powershell
