@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('probe', 'send', 'execute', 'recompile')]
+    [ValidateSet('probe', 'send', 'execute', 'recompile', 'thumbnail', 'render-preview')]
     [string] $Command = 'probe',
 
     [string] $ProjectPath = (Get-Location).Path,
@@ -14,6 +14,31 @@ param(
     [string] $Code,
 
     [string] $CodeFile,
+
+    [string] $AssetPath,
+
+    [ValidateRange(64, 512)]
+    [int] $MaxSize = 192,
+
+    [string] $OutputDirectory = (Join-Path ([System.IO.Path]::GetTempPath()) 'locus-unity-bridge'),
+
+    [ValidateRange(96, 640)]
+    [int] $PreviewWidth = 320,
+
+    [ValidateRange(96, 640)]
+    [int] $PreviewHeight = 220,
+
+    [float] $Yaw = 25,
+
+    [float] $Pitch = -12,
+
+    [float] $Distance = 1.15,
+
+    [float] $PanX = 0,
+
+    [float] $PanY = 0,
+
+    [float] $PanZ = 0,
 
     [ValidateRange(1, 600)]
     [int] $TimeoutSeconds = 10,
@@ -344,6 +369,181 @@ function Invoke-LocusProbe {
     }
 }
 
+function ConvertTo-LocusSafeFileStem {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Value
+    )
+
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($Value)
+    if ([string]::IsNullOrWhiteSpace($stem)) {
+        $stem = 'asset'
+    }
+    foreach ($invalid in [System.IO.Path]::GetInvalidFileNameChars()) {
+        $stem = $stem.Replace([string] $invalid, '_')
+    }
+    return $stem
+}
+
+function Save-LocusPngResponse {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Payload,
+
+        [Parameter(Mandatory)]
+        [string] $Base64Property,
+
+        [Parameter(Mandatory)]
+        [string] $OutputDirectory
+    )
+
+    try {
+        $image = $Payload | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Locus image response was not valid JSON: $($_.Exception.Message)"
+    }
+
+    $base64 = $image.$Base64Property
+    if ([string]::IsNullOrWhiteSpace($base64)) {
+        throw "Locus image response did not include '$Base64Property'."
+    }
+    if ($image.mimeType -ne 'image/png') {
+        throw "Locus image response has unsupported MIME type '$($image.mimeType)'."
+    }
+
+    try {
+        $png = [System.Convert]::FromBase64String($base64)
+    }
+    catch {
+        throw "Locus image response contains invalid Base64: $($_.Exception.Message)"
+    }
+    if ($png.Length -eq 0) {
+        throw 'Locus image response decoded to an empty PNG.'
+    }
+
+    $directory = [System.IO.Path]::GetFullPath($OutputDirectory)
+    [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+    $fileStem = ConvertTo-LocusSafeFileStem -Value ([string] $image.assetPath)
+    $fileName = 'locus_' + $fileStem + '_' + [DateTime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff') + '.png'
+    $path = Join-Path $directory $fileName
+    [System.IO.File]::WriteAllBytes($path, $png)
+
+    return [pscustomobject]@{
+        AssetPath = [string] $image.assetPath
+        Path = $path
+        Width = [int] $image.width
+        Height = [int] $image.height
+        MimeType = [string] $image.mimeType
+    }
+}
+
+function Invoke-LocusThumbnail {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ProjectPath,
+
+        [Parameter(Mandatory)]
+        [string] $AssetPath,
+
+        [Parameter(Mandatory)]
+        [int] $MaxSize,
+
+        [Parameter(Mandatory)]
+        [string] $OutputDirectory,
+
+        [Parameter(Mandatory)]
+        [int] $TimeoutMilliseconds
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AssetPath)) {
+        throw '-AssetPath is required for thumbnail.'
+    }
+
+    $project = Resolve-LocusUnityProject -Path $ProjectPath
+    $pipe = Get-LocusPipeInfo -ProjectPath $project
+    $payload = [ordered]@{
+        assetPath = $AssetPath
+        maxSize = $MaxSize
+    } | ConvertTo-Json -Compress
+    $response = Invoke-LocusRequest `
+        -PipeName $pipe.Name `
+        -MessageType 'asset_thumbnail' `
+        -Message $payload `
+        -TimeoutMilliseconds $TimeoutMilliseconds
+    return Save-LocusPngResponse `
+        -Payload $response.message `
+        -Base64Property 'pngBase64' `
+        -OutputDirectory $OutputDirectory
+}
+
+function Invoke-LocusAssetPreview {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ProjectPath,
+
+        [Parameter(Mandatory)]
+        [string] $AssetPath,
+
+        [Parameter(Mandatory)]
+        [int] $PreviewWidth,
+
+        [Parameter(Mandatory)]
+        [int] $PreviewHeight,
+
+        [Parameter(Mandatory)]
+        [float] $Yaw,
+
+        [Parameter(Mandatory)]
+        [float] $Pitch,
+
+        [Parameter(Mandatory)]
+        [float] $Distance,
+
+        [Parameter(Mandatory)]
+        [float] $PanX,
+
+        [Parameter(Mandatory)]
+        [float] $PanY,
+
+        [Parameter(Mandatory)]
+        [float] $PanZ,
+
+        [Parameter(Mandatory)]
+        [string] $OutputDirectory,
+
+        [Parameter(Mandatory)]
+        [int] $TimeoutMilliseconds
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AssetPath)) {
+        throw '-AssetPath is required for render-preview.'
+    }
+
+    $project = Resolve-LocusUnityProject -Path $ProjectPath
+    $pipe = Get-LocusPipeInfo -ProjectPath $project
+    $payload = [ordered]@{
+        assetPath = $AssetPath
+        width = $PreviewWidth
+        height = $PreviewHeight
+        yaw = $Yaw
+        pitch = $Pitch
+        distance = $Distance
+        panX = $PanX
+        panY = $PanY
+        panZ = $PanZ
+    } | ConvertTo-Json -Compress
+    $response = Invoke-LocusRequest `
+        -PipeName $pipe.Name `
+        -MessageType 'asset_preview_render' `
+        -Message $payload `
+        -TimeoutMilliseconds $TimeoutMilliseconds
+    return Save-LocusPngResponse `
+        -Payload $response.message `
+        -Base64Property 'dataBase64' `
+        -OutputDirectory $OutputDirectory
+}
+
 function Test-LocusTransientReloadError {
     param(
         [Parameter(Mandatory)]
@@ -512,6 +712,33 @@ if ($MyInvocation.InvocationName -ne '.') {
                         -ProjectPath $ProjectPath `
                         -RequestTimeoutMilliseconds $timeoutMilliseconds `
                         -OverallTimeoutSeconds $RecompileTimeoutSeconds
+                )
+            }
+            'thumbnail' {
+                Write-LocusJson -InputObject (
+                    Invoke-LocusThumbnail `
+                        -ProjectPath $ProjectPath `
+                        -AssetPath $AssetPath `
+                        -MaxSize $MaxSize `
+                        -OutputDirectory $OutputDirectory `
+                        -TimeoutMilliseconds $timeoutMilliseconds
+                )
+            }
+            'render-preview' {
+                Write-LocusJson -InputObject (
+                    Invoke-LocusAssetPreview `
+                        -ProjectPath $ProjectPath `
+                        -AssetPath $AssetPath `
+                        -PreviewWidth $PreviewWidth `
+                        -PreviewHeight $PreviewHeight `
+                        -Yaw $Yaw `
+                        -Pitch $Pitch `
+                        -Distance $Distance `
+                        -PanX $PanX `
+                        -PanY $PanY `
+                        -PanZ $PanZ `
+                        -OutputDirectory $OutputDirectory `
+                        -TimeoutMilliseconds $timeoutMilliseconds
                 )
             }
         }

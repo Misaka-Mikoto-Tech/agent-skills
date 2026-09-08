@@ -66,7 +66,7 @@ function Start-MockPipeServer {
         [string] $PipeName,
 
         [Parameter(Mandatory)]
-        [ValidateSet('event-then-ok', 'error')]
+        [ValidateSet('event-then-ok', 'error', 'thumbnail', 'preview')]
         [string] $Mode
     )
 
@@ -82,7 +82,16 @@ function Start-MockPipeServer {
         )
 
         try {
-            $pipe.WaitForConnection()
+            $connectTask = $pipe.WaitForConnectionAsync()
+            $connectTimeout = [System.Threading.Tasks.Task]::Delay(3000)
+            $completed = [System.Threading.Tasks.Task]::WhenAny(
+                $connectTask,
+                $connectTimeout
+            ).GetAwaiter().GetResult()
+            if ($completed -ne $connectTask) {
+                throw "Mock pipe '$PipeName' timed out waiting for a client connection."
+            }
+            $connectTask.GetAwaiter().GetResult()
             $utf8 = [System.Text.UTF8Encoding]::new($false)
             $reader = [System.IO.StreamReader]::new($pipe, $utf8, $false, 4096, $true)
             $writer = [System.IO.StreamWriter]::new($pipe, $utf8, 4096, $true)
@@ -103,6 +112,46 @@ function Start-MockPipeServer {
                     reply_to = $request.id
                     ok = $true
                     message = 'pong'
+                } | ConvertTo-Json -Compress
+                $writer.WriteLine($response)
+            }
+            elseif ($Mode -eq 'thumbnail') {
+                if ($request.type -ne 'asset_thumbnail') {
+                    throw "Expected asset_thumbnail, got '$($request.type)'"
+                }
+                $payload = [ordered]@{
+                    assetPath = 'Assets/Icon.png'
+                    width = 1
+                    height = 1
+                    mimeType = 'image/png'
+                    pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL1YQAAAABJRU5ErkJggg=='
+                } | ConvertTo-Json -Compress
+                $response = [ordered]@{
+                    id = 'response-1'
+                    type = 'response'
+                    reply_to = $request.id
+                    ok = $true
+                    message = $payload
+                } | ConvertTo-Json -Compress
+                $writer.WriteLine($response)
+            }
+            elseif ($Mode -eq 'preview') {
+                if ($request.type -ne 'asset_preview_render') {
+                    throw "Expected asset_preview_render, got '$($request.type)'"
+                }
+                $payload = [ordered]@{
+                    assetPath = 'Assets/Model.prefab'
+                    width = 1
+                    height = 1
+                    mimeType = 'image/png'
+                    dataBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL1YQAAAABJRU5ErkJggg=='
+                } | ConvertTo-Json -Compress
+                $response = [ordered]@{
+                    id = 'response-1'
+                    type = 'response'
+                    reply_to = $request.id
+                    ok = $true
+                    message = $payload
                 } | ConvertTo-Json -Compress
                 $writer.WriteLine($response)
             }
@@ -333,6 +382,97 @@ Invoke-Test 'surfaces ok=false as an error' {
         Wait-Job -Job $job -Timeout 3 | Out-Null
         Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
         Remove-Job -Job $job -Force
+    }
+}
+
+Invoke-Test 'thumbnail command saves the PNG and omits Base64 from its output' {
+    $project = New-TestUnityProject
+    $outputDirectory = Join-Path $project 'LocusOutput'
+    $pipeName = 'locus_skill_test_' + [guid]::NewGuid().ToString('N')
+    $job = $null
+    try {
+        $markerDirectory = Join-Path $project 'Library\Locus'
+        New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $markerDirectory 'NativeBridge.enabled') -Value $pipeName -Encoding utf8NoBOM
+        $job = Start-MockPipeServer -PipeName $pipeName -Mode 'thumbnail'
+        Start-Sleep -Milliseconds 150
+
+        $result = Invoke-BridgeProcess `
+            -WorkingDirectory $project `
+            -BridgeArguments @(
+                '-Command', 'thumbnail',
+                '-ProjectPath', $project,
+                '-AssetPath', 'Assets/Icon.png',
+                '-MaxSize', '64',
+                '-OutputDirectory', $outputDirectory
+            )
+
+        Assert-Equal $result.ExitCode 0 'Thumbnail command should succeed'
+        Assert-Equal $result.Stdout.Contains('pngBase64') $false 'Thumbnail command output must not retain Base64'
+        $thumbnail = $result.Stdout | ConvertFrom-Json
+        Assert-Equal $thumbnail.AssetPath 'Assets/Icon.png' 'Thumbnail metadata should preserve the asset path'
+        Assert-Equal $thumbnail.Width 1 'Thumbnail metadata should preserve the image width'
+        Assert-Equal $thumbnail.Height 1 'Thumbnail metadata should preserve the image height'
+        Assert-Equal $thumbnail.MimeType 'image/png' 'Thumbnail metadata should report PNG'
+        Assert-Equal (Test-Path -LiteralPath $thumbnail.Path -PathType Leaf) $true 'Thumbnail command should write a local PNG'
+        Assert-Equal ((Get-Item -LiteralPath $thumbnail.Path).Length -gt 0) $true 'Written thumbnail PNG should not be empty'
+    }
+    finally {
+        if ($null -ne $job) {
+            Wait-Job -Job $job -Timeout 3 | Out-Null
+            if ($job.State -eq 'Running') {
+                Stop-Job -Job $job | Out-Null
+            }
+            Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $job -Force
+        }
+        Remove-Item -LiteralPath $project -Recurse -Force
+    }
+}
+
+Invoke-Test 'render-preview command saves the PNG and omits Base64 from its output' {
+    $project = New-TestUnityProject
+    $outputDirectory = Join-Path $project 'LocusOutput'
+    $pipeName = 'locus_skill_test_' + [guid]::NewGuid().ToString('N')
+    $job = $null
+    try {
+        $markerDirectory = Join-Path $project 'Library\Locus'
+        New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $markerDirectory 'NativeBridge.enabled') -Value $pipeName -Encoding utf8NoBOM
+        $job = Start-MockPipeServer -PipeName $pipeName -Mode 'preview'
+        Start-Sleep -Milliseconds 150
+
+        $result = Invoke-BridgeProcess `
+            -WorkingDirectory $project `
+            -BridgeArguments @(
+                '-Command', 'render-preview',
+                '-ProjectPath', $project,
+                '-AssetPath', 'Assets/Model.prefab',
+                '-PreviewWidth', '96',
+                '-PreviewHeight', '96',
+                '-OutputDirectory', $outputDirectory
+            )
+
+        Assert-Equal $result.ExitCode 0 'Render-preview command should succeed'
+        Assert-Equal $result.Stdout.Contains('dataBase64') $false 'Render-preview output must not retain Base64'
+        $preview = $result.Stdout | ConvertFrom-Json
+        Assert-Equal $preview.AssetPath 'Assets/Model.prefab' 'Preview metadata should preserve the asset path'
+        Assert-Equal $preview.Width 1 'Preview metadata should preserve the image width'
+        Assert-Equal $preview.Height 1 'Preview metadata should preserve the image height'
+        Assert-Equal $preview.MimeType 'image/png' 'Preview metadata should report PNG'
+        Assert-Equal (Test-Path -LiteralPath $preview.Path -PathType Leaf) $true 'Render-preview command should write a local PNG'
+        Assert-Equal ((Get-Item -LiteralPath $preview.Path).Length -gt 0) $true 'Written preview PNG should not be empty'
+    }
+    finally {
+        if ($null -ne $job) {
+            Wait-Job -Job $job -Timeout 3 | Out-Null
+            if ($job.State -eq 'Running') {
+                Stop-Job -Job $job | Out-Null
+            }
+            Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $job -Force
+        }
+        Remove-Item -LiteralPath $project -Recurse -Force
     }
 }
 
