@@ -129,6 +129,13 @@ multi-line `-CodeFile` and `print(...)` or `printJson(...)` for returned data.
   It serializes anonymous objects, dictionaries, and ordinary property-bearing
   values to JSON; do not declare a DTO class solely to return data.
 
+| Symbol | Purpose |
+|---|---|
+| `print` / `printJson` | Append plain text / JSON to the final result buffer. |
+| `clear` | Clear that buffer; rarely needed. |
+| `ctx` | Unity-aware waits and progress, such as `WaitFrames`, `WaitSeconds`, and `Progress`. |
+| `ct` | Cancellation token; check it in long loops or call `ThrowIfCancellationRequested()`. |
+
 #### Async work
 
 Top-level `await` is supported. For work spanning Unity editor frames, use
