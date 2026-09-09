@@ -134,6 +134,18 @@ exactly one. Prefer `print(...)` or `printJson(...)` for returned data.
   It serializes anonymous objects, dictionaries, and ordinary property-bearing
   values to JSON; do not declare a DTO class solely to return data.
 
+#### Execute safety
+
+- Every loop in an execute snippet needs an explicit completion condition and an
+  iteration or time bound. Do not use unbounded `while`, `for`, or polling loops.
+- Long-running loops must call `ct.ThrowIfCancellationRequested()` regularly;
+  use `await ctx...` for waits that continue with Unity API access.
+- `-TimeoutSeconds` only stops this client from waiting; it does not stop Unity
+  code already running. Treat it as a wait limit, not a recovery mechanism.
+- Locus also has a 30-second inactivity watchdog. It requests cancellation and
+  returns a timeout, but cannot preempt code already blocking Unity's main
+  thread. Do not treat that watchdog as a hard stop.
+
 | Symbol | Purpose |
 |---|---|
 | `print` / `printJson` | Append plain text / JSON to the final result buffer. |
@@ -156,9 +168,12 @@ Top-level `await` is supported. For waits followed by Unity API access, use a
 Do not pass Unity yield objects to `ctx`. Await local async functions from the
 snippet. Each `await ctx...` checks cancellation before continuing. In long
 synchronous loops, or after an external await that does not accept `ct`, call
-`ct.ThrowIfCancellationRequested()`. Emit `print(...)` or `ctx.Progress(...)`
-at least every 30 seconds to avoid inactivity cancellation; set
-`-TimeoutSeconds` for the expected total duration.
+`ct.ThrowIfCancellationRequested()`. The watchdog fires after 30 seconds of
+silence: emit `ctx.Progress(...)` more often than that. Do not use a single
+silent `await ctx.WaitSeconds(30)` or longer; split a longer wait into chunks
+under 30 seconds and report progress between them. `print(...)` also resets the watchdog,
+but does not check cancellation, so pair it with an explicit `ct` check in
+long-running loops. Set `-TimeoutSeconds` for the expected total duration.
 
 ```csharp
 ctx.Progress("Inspecting scene", 0.25f);
@@ -207,6 +222,7 @@ For progress-driven cancellation, the process runner must stream stdout while
 keeping stdin writable; a launcher that only redirects/captures stdout can delay
 `Write-Host` progress until exit. Use a streaming terminal or PTY session, then
 read progress and write `cancel` to that same session. Keep `-NonInteractive`.
+If cancellation input is unavailable, split the work into bounded execute calls.
 
 ## Transport notes
 
