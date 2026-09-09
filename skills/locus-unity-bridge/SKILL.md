@@ -118,25 +118,34 @@ necessary. Rendering does not modify the source asset.
 Use `execute` only when the curated operations do not answer the task. Prefer a
 multi-line `-CodeFile` and `print(...)` or `printJson(...)` for returned data.
 
-`-CodeFile` content becomes the body of a Locus-generated entry method, not an
-independent C# file. Write direct statements and, when useful, local functions;
-async local functions must be awaited from the snippet. Do not declare `Main`,
-`class`, `struct`, or `namespace`. The injected `print`, `printJson`, `clear`,
-`ctx`, and `ct` are available directly; a non-null `return` value is printed.
+#### Snippet contract
 
-Top-level `await` is supported. For Unity work that must span editor frames,
-prefer `await ctx.wait`, `ctx.WaitFrames(...)`, `ctx.WaitSeconds(...)`, or
-`ctx.WaitUntil(...)`; their continuations run from `EditorApplication.update`.
-Check `ct` (the injected cancellation token) in long loops. Emit `print(...)`
-or `ctx.Progress(...)` at least every 30 seconds, otherwise Locus cancels the
-execution for inactivity. Set `-TimeoutSeconds` for the expected total duration.
+- `-CodeFile` is the body of a Locus-generated entry method, not an independent
+  C# file. Write direct statements and local functions; do not declare `Main`,
+  `class`, `struct`, or `namespace`.
+- `print`, `printJson`, `clear`, `ctx`, and `ct` are injected. A non-null
+  `return` value is printed as text.
+- For structured output, use `printJson(new { key = value, items = values })`.
+  It serializes anonymous objects, dictionaries, and ordinary property-bearing
+  values to JSON; do not declare a DTO class solely to return data.
+
+#### Async work
+
+Top-level `await` is supported. For work spanning Unity editor frames, use
+`await ctx.wait`, `ctx.WaitFrames(...)`, `ctx.WaitSeconds(...)`, or
+`ctx.WaitUntil(...)`; continuations run from `EditorApplication.update`. Await
+async local functions from the snippet. Check `ct` in long loops and emit
+`print(...)` or `ctx.Progress(...)` at least every 30 seconds to avoid Locus
+inactivity cancellation. Set `-TimeoutSeconds` for the expected total duration.
 
 ```csharp
-print("Waiting for the editor");
-await ctx.WaitFrames(3);
-ctx.Progress("Inspecting scene", 0.5f);
+var scene = SceneManager.GetActiveScene();
+ctx.Progress("Inspecting scene", 0.25f);
+await ctx.WaitFrames(2);
 ct.ThrowIfCancellationRequested();
-print("Ready");
+var rootNames = scene.GetRootGameObjects().Select(go => go.name).ToArray();
+printJson(new { scene = scene.name, rootNames });
+return $"Found {rootNames.Length} root objects";
 ```
 
 Use these `ctx` awaitables rather than `Task.Delay` when Unity API access must
