@@ -48,6 +48,8 @@ param(
 
     [switch] $FollowProgress,
 
+    [switch] $AcceptCancel,
+
     [ValidateRange(1, 60)]
     [int] $ProgressIntervalSeconds = 2,
 
@@ -319,7 +321,7 @@ function Invoke-LocusRequest {
     }
 }
 
-function Invoke-LocusExecuteWithProgress {
+function Invoke-LocusExecute {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -335,7 +337,11 @@ function Invoke-LocusExecuteWithProgress {
 
         [Parameter(Mandatory)]
         [ValidateRange(1, 60)]
-        [int] $ProgressIntervalSeconds
+        [int] $ProgressIntervalSeconds,
+
+        [switch] $FollowProgress,
+
+        [switch] $AcceptCancel
     )
 
     $bareName = ConvertTo-LocusBarePipeName -PipeName $PipeName
@@ -372,13 +378,16 @@ function Invoke-LocusExecuteWithProgress {
 
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $intervalMilliseconds = ([int64] $ProgressIntervalSeconds) * 1000
-        $nextProgressAt = $intervalMilliseconds
+        $nextProgressAt = if ($FollowProgress) { $intervalMilliseconds } else { $null }
         $lastProgressSignature = $null
         $readTask = $null
+        $cancelInputTask = if ($AcceptCancel) { [Console]::In.ReadLineAsync() } else { $null }
+        $cancelRequested = $false
+        $cancelRequestId = $null
 
         while ($stopwatch.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
             $elapsed = $stopwatch.ElapsedMilliseconds
-            if ($elapsed -ge $nextProgressAt) {
+            if ($FollowProgress -and $elapsed -ge $nextProgressAt) {
                 $progressRequest = [ordered]@{
                     id = 'locus-skill-' + [guid]::NewGuid().ToString('N')
                     type = 'execute_code_progress'
@@ -393,12 +402,43 @@ function Invoke-LocusExecuteWithProgress {
             }
 
             $remaining = [Math]::Max(1, $TimeoutMilliseconds - [int] $stopwatch.ElapsedMilliseconds)
-            $untilProgress = [Math]::Max(1, [int] ($nextProgressAt - $stopwatch.ElapsedMilliseconds))
-            $waitMilliseconds = [Math]::Min($remaining, $untilProgress)
-            $completed = [System.Threading.Tasks.Task]::WhenAny(
-                $readTask,
+            $waitMilliseconds = $remaining
+            if ($FollowProgress) {
+                $untilProgress = [Math]::Max(1, [int] ($nextProgressAt - $stopwatch.ElapsedMilliseconds))
+                $waitMilliseconds = [Math]::Min($remaining, $untilProgress)
+            }
+            $waitTasks = @(
+                [System.Threading.Tasks.Task] $readTask,
                 [System.Threading.Tasks.Task]::Delay($waitMilliseconds)
+            )
+            if ($null -ne $cancelInputTask) {
+                $waitTasks += [System.Threading.Tasks.Task] $cancelInputTask
+            }
+            $completed = [System.Threading.Tasks.Task]::WhenAny(
+                [System.Threading.Tasks.Task[]] $waitTasks
             ).GetAwaiter().GetResult()
+
+            if ($completed -eq $cancelInputTask) {
+                $control = $cancelInputTask.GetAwaiter().GetResult()
+                $cancelInputTask = $null
+                if ($null -ne $control -and
+                    [string]::Equals($control.Trim(), 'cancel', [StringComparison]::OrdinalIgnoreCase)) {
+                    if (-not $cancelRequested) {
+                        $cancelRequested = $true
+                        $cancelRequestId = 'locus-skill-' + [guid]::NewGuid().ToString('N')
+                        $cancelRequest = [ordered]@{
+                            id = $cancelRequestId
+                            type = 'cancel_execute_code'
+                            message = $executionId
+                        } | ConvertTo-Json -Compress -Depth 20
+                        $writer.WriteLine($cancelRequest)
+                    }
+                }
+                if ($null -ne $control) {
+                    $cancelInputTask = [Console]::In.ReadLineAsync()
+                }
+                continue
+            }
 
             if ($completed -ne $readTask) {
                 continue
@@ -428,12 +468,35 @@ function Invoke-LocusExecuteWithProgress {
                     else {
                         'execute_code failed without an error message'
                     }
+                    if ($cancelRequested -and $reason -match '^(?i)execute_code canceled$') {
+                        return [pscustomobject]@{
+                            Status = 'canceled'
+                            Message = $reason
+                            ExecutionId = $executionId
+                        }
+                    }
                     throw "Locus 'execute_code' failed: $reason"
                 }
                 return $envelope
             }
 
-            if ($envelope.reply_to -and $envelope.ok -eq $true) {
+            if ($envelope.reply_to -eq $cancelRequestId) {
+                if ($envelope.ok -ne $true) {
+                    $reason = if (-not [string]::IsNullOrWhiteSpace($envelope.error)) {
+                        $envelope.error
+                    }
+                    elseif (-not [string]::IsNullOrWhiteSpace($envelope.message)) {
+                        $envelope.message
+                    }
+                    else {
+                        'cancel_execute_code failed without an error message'
+                    }
+                    throw "Locus 'cancel_execute_code' failed: $reason"
+                }
+                continue
+            }
+
+            if ($FollowProgress -and $envelope.reply_to -and $envelope.ok -eq $true) {
                 try {
                     $progress = $envelope.message | ConvertFrom-Json
                     $progressOutput = [ordered]@{
@@ -873,20 +936,13 @@ if ($MyInvocation.InvocationName -ne '.') {
                 }
                 $project = Resolve-LocusUnityProject -Path $ProjectPath
                 $pipe = Get-LocusPipeInfo -ProjectPath $project
-                $execute = if ($FollowProgress) {
-                    Invoke-LocusExecuteWithProgress `
-                        -PipeName $pipe.Name `
-                        -Code $source `
-                        -TimeoutMilliseconds $timeoutMilliseconds `
-                        -ProgressIntervalSeconds $ProgressIntervalSeconds
-                }
-                else {
-                    Invoke-LocusRequest `
-                        -PipeName $pipe.Name `
-                        -MessageType 'execute_code' `
-                        -Message $source `
-                        -TimeoutMilliseconds $timeoutMilliseconds
-                }
+                $execute = Invoke-LocusExecute `
+                    -PipeName $pipe.Name `
+                    -Code $source `
+                    -TimeoutMilliseconds $timeoutMilliseconds `
+                    -ProgressIntervalSeconds $ProgressIntervalSeconds `
+                    -FollowProgress:$FollowProgress `
+                    -AcceptCancel:$AcceptCancel
                 Write-LocusJson -InputObject (
                     $execute
                 )

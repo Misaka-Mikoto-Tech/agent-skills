@@ -66,7 +66,15 @@ function Start-MockPipeServer {
         [string] $PipeName,
 
         [Parameter(Mandatory)]
-        [ValidateSet('event-then-ok', 'error', 'thumbnail', 'preview', 'execute-with-progress')]
+        [ValidateSet(
+            'event-then-ok',
+            'error',
+            'thumbnail',
+            'preview',
+            'execute-with-progress',
+            'execute-cancel',
+            'execute-progress-then-cancel'
+        )]
         [string] $Mode
     )
 
@@ -148,6 +156,71 @@ function Start-MockPipeServer {
                     reply_to = $request.id
                     ok = $true
                     message = 'finished'
+                } | ConvertTo-Json -Compress
+                $writer.WriteLine($response)
+            }
+            elseif ($Mode -eq 'execute-cancel' -or $Mode -eq 'execute-progress-then-cancel') {
+                if ($request.type -ne 'execute_code') {
+                    throw "Expected execute_code, got '$($request.type)'"
+                }
+
+                $executionIdMatch = [regex]::Match(
+                    [string] $request.message,
+                    '//__LOCUS_EXECUTION_ID__:([^\r\n]+)'
+                )
+                if (-not $executionIdMatch.Success) {
+                    throw 'Expected execute_code to include an execution ID marker.'
+                }
+                $executionId = $executionIdMatch.Groups[1].Value
+
+                if ($Mode -eq 'execute-progress-then-cancel') {
+                    $progress = [ordered]@{
+                        id = 'progress-response'
+                        type = 'response'
+                        reply_to = 'initial-progress'
+                        ok = $true
+                        message = '{"active":true,"title":"Mock progress","info":"waiting","progress":0.5,"revision":7,"source":"api"}'
+                    } | ConvertTo-Json -Compress
+                    $writer.WriteLine($progress)
+                }
+
+                $cancelRequest = $null
+                while ($null -eq $cancelRequest) {
+                    $nextRequest = $reader.ReadLine() | ConvertFrom-Json
+                    if ($nextRequest.type -eq 'execute_code_progress') {
+                        $progress = [ordered]@{
+                            id = 'progress-response'
+                            type = 'response'
+                            reply_to = $nextRequest.id
+                            ok = $true
+                            message = '{"active":true,"title":"Mock progress","info":"waiting","progress":0.5,"revision":8,"source":"api"}'
+                        } | ConvertTo-Json -Compress
+                        $writer.WriteLine($progress)
+                        continue
+                    }
+                    if ($nextRequest.type -ne 'cancel_execute_code') {
+                        throw "Expected cancel_execute_code, got '$($nextRequest.type)'"
+                    }
+                    $cancelRequest = $nextRequest
+                }
+                if ($cancelRequest.message -ne $executionId) {
+                    throw "Cancel request should target '$executionId', got '$($cancelRequest.message)'"
+                }
+                $cancelResponse = [ordered]@{
+                    id = 'cancel-response'
+                    type = 'response'
+                    reply_to = $cancelRequest.id
+                    ok = $true
+                    message = 'execute_code cancellation requested'
+                } | ConvertTo-Json -Compress
+                $writer.WriteLine($cancelResponse)
+
+                $response = [ordered]@{
+                    id = 'response-1'
+                    type = 'response'
+                    reply_to = $request.id
+                    ok = $false
+                    error = 'execute_code canceled'
                 } | ConvertTo-Json -Compress
                 $writer.WriteLine($response)
             }
@@ -243,6 +316,49 @@ function Invoke-BridgeProcess {
     $process = [System.Diagnostics.Process]::Start($startInfo)
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        Stdout = $stdoutTask.GetAwaiter().GetResult()
+        Stderr = $stderrTask.GetAwaiter().GetResult()
+    }
+}
+
+function Invoke-BridgeProcessWithCancel {
+    param(
+        [Parameter(Mandatory)]
+        [string] $WorkingDirectory,
+
+        [Parameter(Mandatory)]
+        [string[]] $BridgeArguments,
+
+        [int] $CancelDelayMilliseconds = 150
+    )
+
+    $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $pwsh
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-File',
+        $scriptUnderTest
+    ) + $BridgeArguments) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    Start-Sleep -Milliseconds $CancelDelayMilliseconds
+    $process.StandardInput.WriteLine('cancel')
+    $process.StandardInput.Close()
     $process.WaitForExit()
     return [pscustomobject]@{
         ExitCode = $process.ExitCode
@@ -430,6 +546,90 @@ Invoke-Test 'execute follow-progress multiplexes requests on one connection and 
         Assert-Equal $result.Stdout.Contains('"revision":7') $true 'Progress output should contain the snapshot'
         Assert-Equal $result.Stdout.Contains('sensitive snippet source') $false 'Progress output should not include source code text'
         Assert-Equal $result.Stdout.Contains('"message": "finished"') $true 'Final execute response should still be emitted'
+    }
+    finally {
+        if ($null -ne $job) {
+            Wait-Job -Job $job -Timeout 5 | Out-Null
+            if ($job.State -eq 'Running') {
+                Stop-Job -Job $job | Out-Null
+            }
+            Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $job -Force
+        }
+        Remove-Item -LiteralPath $project -Recurse -Force
+    }
+}
+
+Invoke-Test 'execute accepts stdin cancellation without progress polling' {
+    $project = New-TestUnityProject
+    $pipeName = 'locus_skill_test_' + [guid]::NewGuid().ToString('N')
+    $job = $null
+    try {
+        $editor = Join-Path $project 'Packages\com.farlocus.locus\Editor'
+        $markerDirectory = Join-Path $project 'Library\Locus'
+        New-Item -ItemType Directory -Path $editor -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $editor 'Locus.Editor.asmdef') -Force | Out-Null
+        New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $markerDirectory 'NativeBridge.enabled') -Value $pipeName -Encoding utf8NoBOM
+        $job = Start-MockPipeServer -PipeName $pipeName -Mode 'execute-cancel'
+        Start-Sleep -Milliseconds 150
+
+        $result = Invoke-BridgeProcessWithCancel `
+            -WorkingDirectory $project `
+            -BridgeArguments @(
+                '-Command', 'execute',
+                '-ProjectPath', $project,
+                '-Code', 'print("mock")',
+                '-AcceptCancel',
+                '-TimeoutSeconds', '5'
+            )
+
+        Assert-Equal $result.ExitCode 0 'Cancelable execute should normalize its cancellation response'
+        Assert-Equal $result.Stdout.Contains('"Status": "canceled"') $true 'Cancelable execute should identify intentional cancellation'
+        Assert-Equal $result.Stdout.Contains('<locus-execute-progress>') $false 'Normal execute should not poll or print progress'
+    }
+    finally {
+        if ($null -ne $job) {
+            Wait-Job -Job $job -Timeout 5 | Out-Null
+            if ($job.State -eq 'Running') {
+                Stop-Job -Job $job | Out-Null
+            }
+            Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $job -Force
+        }
+        Remove-Item -LiteralPath $project -Recurse -Force
+    }
+}
+
+Invoke-Test 'execute follow-progress accepts stdin cancellation on its existing connection' {
+    $project = New-TestUnityProject
+    $pipeName = 'locus_skill_test_' + [guid]::NewGuid().ToString('N')
+    $job = $null
+    try {
+        $editor = Join-Path $project 'Packages\com.farlocus.locus\Editor'
+        $markerDirectory = Join-Path $project 'Library\Locus'
+        New-Item -ItemType Directory -Path $editor -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $editor 'Locus.Editor.asmdef') -Force | Out-Null
+        New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $markerDirectory 'NativeBridge.enabled') -Value $pipeName -Encoding utf8NoBOM
+        $job = Start-MockPipeServer -PipeName $pipeName -Mode 'execute-progress-then-cancel'
+        Start-Sleep -Milliseconds 150
+
+        $result = Invoke-BridgeProcessWithCancel `
+            -WorkingDirectory $project `
+            -BridgeArguments @(
+                '-Command', 'execute',
+                '-ProjectPath', $project,
+                '-Code', 'print("mock")',
+                '-FollowProgress',
+                '-AcceptCancel',
+                '-ProgressIntervalSeconds', '1',
+                '-TimeoutSeconds', '5'
+            )
+
+        Assert-Equal $result.ExitCode 0 'Follow-progress execute should normalize its cancellation response'
+        Assert-Equal ([regex]::Matches($result.Stdout, '<locus-execute-progress>').Count) 1 'Follow-progress execute should emit its progress before cancellation'
+        Assert-Equal $result.Stdout.Contains('"Status": "canceled"') $true 'Follow-progress execute should identify intentional cancellation'
     }
     finally {
         if ($null -ne $job) {

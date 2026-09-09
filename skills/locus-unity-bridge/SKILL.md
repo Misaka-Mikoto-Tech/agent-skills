@@ -150,14 +150,15 @@ Top-level `await` is supported. For waits followed by Unity API access, use a
 | `await ctx.WaitUntil(() => condition, "description")` | A condition checked on each editor update. |
 
 Do not pass Unity yield objects to `ctx`. Await local async functions from the
-snippet. In long loops check `ct` and emit `print(...)` or `ctx.Progress(...)`
+snippet. Each `await ctx...` checks cancellation before continuing. In long
+synchronous loops, or after an external await that does not accept `ct`, call
+`ct.ThrowIfCancellationRequested()`. Emit `print(...)` or `ctx.Progress(...)`
 at least every 30 seconds to avoid inactivity cancellation; set
 `-TimeoutSeconds` for the expected total duration.
 
 ```csharp
 ctx.Progress("Inspecting scene", 0.25f);
 await ctx.WaitFrames(2);
-ct.ThrowIfCancellationRequested();
 
 var scene = SceneManager.GetActiveScene();
 var roots = scene.GetRootGameObjects();
@@ -177,7 +178,7 @@ for the snippet's final response.
 & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $locusBridge `
     -Command execute -ProjectPath 'E:\Source\SomeUnityProject' `
     -CodeFile 'C:\Temp\inspect-scene.cs' -TimeoutSeconds 60 `
-    -FollowProgress -ProgressIntervalSeconds 2
+    -FollowProgress -ProgressIntervalSeconds 2 -AcceptCancel
 
 & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $locusBridge `
     -Command recompile -ProjectPath 'E:\Source\SomeUnityProject' `
@@ -187,6 +188,16 @@ for the snippet's final response.
 For `recompile`, `-RecompileRequestTimeoutSeconds` limits each pipe request;
 `-RecompileTimeoutSeconds` limits the complete compile, reload, and reconnect
 workflow. `-TimeoutSeconds` does not apply to `recompile`.
+
+#### Cancel a running execute
+
+Add `-AcceptCancel` only when the caller keeps the running PowerShell process's
+stdin writable. To stop the execution, write one line containing `cancel` to
+that stdin. The script sends the cancellation on its existing Locus connection,
+then returns `{ "Status": "canceled", ... }`. This works with or without
+`-FollowProgress`; progress merely gives the agent a basis for deciding. Do not
+start a second Locus client to cancel a running execution. Cancellation is
+cooperative: snippets must await `ctx` or check `ct` in long-running code.
 
 ## Transport notes
 
