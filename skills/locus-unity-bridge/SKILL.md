@@ -175,13 +175,29 @@ under 30 seconds and report progress between them. `print(...)` also resets the 
 but does not check cancellation, so pair it with an explicit `ct` check in
 long-running loops. Set `-TimeoutSeconds` for the expected total duration.
 
-```csharp
-ctx.Progress("Inspecting scene", 0.25f);
-await ctx.WaitFrames(2);
+For a bounded scan, check cancellation on every iteration and periodically
+report progress before yielding the Unity main thread:
 
+```csharp
 var scene = SceneManager.GetActiveScene();
 var roots = scene.GetRootGameObjects();
-printJson(new { scene = scene.name, rootCount = roots.Length });
+var rootNames = new List<string>(roots.Length);
+
+for (var i = 0; i < roots.Length; i++)
+{
+    // Limit cancellation latency within this 100-item batch.
+    ct.ThrowIfCancellationRequested();
+    rootNames.Add(roots[i].name);
+
+    if ((i + 1) % 100 == 0 || i == roots.Length - 1)
+    {
+        ctx.Progress("Inspecting roots", $"{i + 1}/{roots.Length}",
+            (float)(i + 1) / roots.Length);
+        await ctx.WaitFrame();
+    }
+}
+
+printJson(new { scene = scene.name, rootNames });
 ```
 
 Use these `ctx` awaitables rather than `Task.Delay` when Unity API access must
