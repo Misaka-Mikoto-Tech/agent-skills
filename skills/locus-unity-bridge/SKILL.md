@@ -242,8 +242,6 @@ If cancellation input is unavailable, split the work into bounded execute calls.
 
 ## Transport notes
 
-- The pipe can emit `unity-editor-update` events before the matching response;
-  the client already waits for the envelope whose `reply_to` matches its request.
 - `execute -FollowProgress` is opt-in for long async snippets. It checks
   progress every 2 seconds by default and writes only meaningful status changes
   as compact `<locus-execute-progress>{...}</locus-execute-progress>` lines
