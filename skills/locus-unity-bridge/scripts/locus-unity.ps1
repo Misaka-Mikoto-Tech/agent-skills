@@ -370,7 +370,7 @@ function Invoke-LocusExecuteWithProgress {
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $intervalMilliseconds = ([int64] $ProgressIntervalSeconds) * 1000
         $nextProgressAt = $intervalMilliseconds
-        $lastProgressRevision = $null
+        $lastProgressSignature = $null
         $readTask = $null
 
         while ($stopwatch.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
@@ -433,22 +433,32 @@ function Invoke-LocusExecuteWithProgress {
             if ($envelope.reply_to -and $envelope.ok -eq $true) {
                 try {
                     $progress = $envelope.message | ConvertFrom-Json
-                    $revision = [string] $progress.revision
-                    if (-not [string]::IsNullOrWhiteSpace($revision) -and $revision -ne $lastProgressRevision) {
-                        $lastProgressRevision = $revision
-                        $progressOutput = [ordered]@{
-                            active = [bool] $progress.active
-                            title = [string] $progress.title
-                            info = [string] $progress.info
-                            progress = $progress.progress
-                            revision = $progress.revision
-                            source = [string] $progress.source
-                            waitKind = [string] $progress.waitKind
-                            waitTarget = [string] $progress.waitTarget
-                            waitCondition = [string] $progress.waitCondition
-                            sourceLine = $progress.sourceLine
-                            waitedMs = $progress.waitedMs
-                        }
+                    $progressOutput = [ordered]@{
+                        active = [bool] $progress.active
+                        title = [string] $progress.title
+                        info = [string] $progress.info
+                        progress = $progress.progress
+                        revision = $progress.revision
+                        source = [string] $progress.source
+                        waitKind = [string] $progress.waitKind
+                        waitTarget = [string] $progress.waitTarget
+                        waitCondition = [string] $progress.waitCondition
+                        sourceLine = $progress.sourceLine
+                        waitedMs = $progress.waitedMs
+                    }
+                    $progressSignature = [ordered]@{
+                        active = $progressOutput.active
+                        title = $progressOutput.title
+                        info = $progressOutput.info
+                        progress = $progressOutput.progress
+                        source = $progressOutput.source
+                        waitKind = $progressOutput.waitKind
+                        waitTarget = $progressOutput.waitTarget
+                        waitCondition = $progressOutput.waitCondition
+                        sourceLine = $progressOutput.sourceLine
+                    } | ConvertTo-Json -Compress -Depth 20
+                    if ($progressSignature -ne $lastProgressSignature) {
+                        $lastProgressSignature = $progressSignature
                         $progressJson = $progressOutput | ConvertTo-Json -Compress -Depth 20
                         Write-Host "<locus-execute-progress>$progressJson</locus-execute-progress>"
                     }

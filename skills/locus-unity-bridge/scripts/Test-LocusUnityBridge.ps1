@@ -126,12 +126,18 @@ function Start-MockPipeServer {
                         throw "Expected execute_code_progress, got '$($progressRequest.type)'"
                     }
 
+                    $snapshot = if ($i -eq 0) {
+                        '{"active":true,"title":"Mock progress","info":"waiting","progress":0.5,"revision":7,"source":"api","waitedMs":100,"sourceText":"sensitive snippet source"}'
+                    }
+                    else {
+                        '{"active":true,"title":"Mock progress","info":"waiting","progress":0.5,"revision":8,"source":"api","waitedMs":200,"sourceText":"sensitive snippet source"}'
+                    }
                     $progress = [ordered]@{
                         id = 'progress-response-' + $i
                         type = 'response'
                         reply_to = $progressRequest.id
                         ok = $true
-                        message = '{"active":true,"title":"Mock progress","info":"waiting","progress":0.5,"revision":7,"source":"api","sourceText":"sensitive snippet source"}'
+                        message = $snapshot
                     } | ConvertTo-Json -Compress
                     $writer.WriteLine($progress)
                 }
@@ -420,7 +426,7 @@ Invoke-Test 'execute follow-progress multiplexes requests on one connection and 
             )
 
         Assert-Equal $result.ExitCode 0 'Follow-progress execute should succeed'
-        Assert-Equal ([regex]::Matches($result.Stdout, '<locus-execute-progress>').Count) 1 'Unchanged progress revision should not repeat'
+        Assert-Equal ([regex]::Matches($result.Stdout, '<locus-execute-progress>').Count) 1 'Revision and wait duration alone should not repeat progress output'
         Assert-Equal $result.Stdout.Contains('"revision":7') $true 'Progress output should contain the snapshot'
         Assert-Equal $result.Stdout.Contains('sensitive snippet source') $false 'Progress output should not include source code text'
         Assert-Equal $result.Stdout.Contains('"message": "finished"') $true 'Final execute response should still be emitted'
