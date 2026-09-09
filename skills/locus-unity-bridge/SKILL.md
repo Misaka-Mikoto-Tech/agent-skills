@@ -165,7 +165,8 @@ printJson(new { scene = scene.name, rootCount = roots.Length });
 ```
 
 Use these `ctx` awaitables rather than `Task.Delay` when Unity API access must
-continue after the wait.
+continue after the wait. For `execute`, `-TimeoutSeconds` is the maximum wait
+for the snippet's final response.
 
 ```powershell
 & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $locusBridge `
@@ -180,8 +181,12 @@ continue after the wait.
 
 & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $locusBridge `
     -Command recompile -ProjectPath 'E:\Source\SomeUnityProject' `
-    -TimeoutSeconds 10 -RecompileTimeoutSeconds 120
+    -RecompileRequestTimeoutSeconds 10 -RecompileTimeoutSeconds 120
 ```
+
+For `recompile`, `-RecompileRequestTimeoutSeconds` limits each pipe request;
+`-RecompileTimeoutSeconds` limits the complete compile, reload, and reconnect
+workflow. `-TimeoutSeconds` does not apply to `recompile`.
 
 ## Transport notes
 

@@ -567,6 +567,48 @@ Invoke-Test 'times out when the pipe is unavailable' {
     Assert-Equal $caught.Contains('unavailable') $true 'Unavailable pipe should have a clear diagnostic'
 }
 
+Invoke-Test 'recompile accepts a dedicated per-request timeout option' {
+    $project = New-TestUnityProject
+    try {
+        $result = Invoke-BridgeProcess `
+            -WorkingDirectory $project `
+            -BridgeArguments @(
+                '-Command', 'recompile',
+                '-ProjectPath', $project,
+                '-RecompileRequestTimeoutSeconds', '1',
+                '-RecompileTimeoutSeconds', '1'
+            )
+        $output = $result.Stdout + $result.Stderr
+
+        Assert-Equal $result.ExitCode 1 'Unreachable recompile should fail after parsing its options'
+        Assert-Equal $output.Contains('unavailable') $true 'Dedicated timeout option should reach recompile execution'
+    }
+    finally {
+        Remove-Item -LiteralPath $project -Recurse -Force
+    }
+}
+
+Invoke-Test 'recompile rejects the generic timeout option' {
+    $project = New-TestUnityProject
+    try {
+        $result = Invoke-BridgeProcess `
+            -WorkingDirectory $project `
+            -BridgeArguments @(
+                '-Command', 'recompile',
+                '-ProjectPath', $project,
+                '-TimeoutSeconds', '1',
+                '-RecompileTimeoutSeconds', '1'
+            )
+        $output = $result.Stdout + $result.Stderr
+
+        Assert-Equal $result.ExitCode 1 'Generic timeout should be rejected for recompile'
+        Assert-Equal $output.Contains('-TimeoutSeconds does not apply to recompile') $true 'Error should name the dedicated timeout option'
+    }
+    finally {
+        Remove-Item -LiteralPath $project -Recurse -Force
+    }
+}
+
 Invoke-Test 'does not treat an initially unavailable recompile pipe as a reload' {
     $project = New-TestUnityProject
     try {

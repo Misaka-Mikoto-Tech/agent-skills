@@ -43,6 +43,9 @@ param(
     [ValidateRange(1, 600)]
     [int] $TimeoutSeconds = 10,
 
+    [ValidateRange(1, 600)]
+    [int] $RecompileRequestTimeoutSeconds = 10,
+
     [switch] $FollowProgress,
 
     [ValidateRange(1, 60)]
@@ -889,10 +892,13 @@ if ($MyInvocation.InvocationName -ne '.') {
                 )
             }
             'recompile' {
+                if ($PSBoundParameters.ContainsKey('TimeoutSeconds')) {
+                    throw '-TimeoutSeconds does not apply to recompile; use -RecompileRequestTimeoutSeconds.'
+                }
                 Write-LocusJson -InputObject (
                     Invoke-LocusRecompile `
                         -ProjectPath $ProjectPath `
-                        -RequestTimeoutMilliseconds $timeoutMilliseconds `
+                        -RequestTimeoutMilliseconds ($RecompileRequestTimeoutSeconds * 1000) `
                         -OverallTimeoutSeconds $RecompileTimeoutSeconds
                 )
             }
