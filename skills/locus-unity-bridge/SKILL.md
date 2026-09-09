@@ -27,7 +27,7 @@ message type as a value for `-Command`.
 | `send` | Send one approved protocol message listed below. |
 | `thumbnail` | Save an asset thumbnail as a local PNG. |
 | `render-preview` | Save a Prefab/model preview as a local PNG. |
-| `execute` | Run authorized C# from a file. |
+| `execute` | Run an authorized C# snippet. |
 | `recompile` | Request compilation and wait through domain reload. |
 
 Resolve the client once:
@@ -115,14 +115,15 @@ necessary. Rendering does not modify the source asset.
 
 ### Execute authorized C# or recompile
 
-Use `execute` only when the curated operations do not answer the task. Prefer a
-multi-line `-CodeFile` and `print(...)` or `printJson(...)` for returned data.
+Use `execute` only when the curated operations do not answer the task. Use
+`-Code` for a short snippet or `-CodeFile` for multi-line/reusable code; provide
+exactly one. Prefer `print(...)` or `printJson(...)` for returned data.
 
 #### Snippet contract
 
-- `-CodeFile` is the body of a Locus-generated entry method, not an independent
-  C# file. Write direct statements and local functions; do not declare `Main`,
-  `class`, `struct`, or `namespace`.
+- The supplied code is the body of a Locus-generated entry method, not an
+  independent C# file. Write direct statements and local functions; do not
+  declare `Main`, `class`, `struct`, or `namespace`.
 - `print`, `printJson`, `clear`, `ctx`, and `ct` are injected. A non-null
   `return` value is printed as text.
 - For structured output, use `printJson(new { key = value, items = values })`.
@@ -138,21 +139,29 @@ multi-line `-CodeFile` and `print(...)` or `printJson(...)` for returned data.
 
 #### Async work
 
-Top-level `await` is supported. For work spanning Unity editor frames, use
-`await ctx.wait`, `ctx.WaitFrames(...)`, `ctx.WaitSeconds(...)`, or
-`ctx.WaitUntil(...)`; continuations run from `EditorApplication.update`. Await
-async local functions from the snippet. Check `ct` in long loops and emit
-`print(...)` or `ctx.Progress(...)` at least every 30 seconds to avoid Locus
-inactivity cancellation. Set `-TimeoutSeconds` for the expected total duration.
+Top-level `await` is supported. For waits followed by Unity API access, use a
+`ctx` awaitable so the continuation resumes from `EditorApplication.update`.
+
+| Expression | Waits for |
+|---|---|
+| `await ctx.wait` / `await ctx.WaitFrame()` | The next editor update. |
+| `await ctx.WaitFrames(n)` | `n` editor updates. |
+| `await ctx.WaitSeconds(s)` | At least `s` seconds, then a later editor update. |
+| `await ctx.WaitUntil(() => condition, "description")` | A condition checked on each editor update. |
+
+Do not pass Unity yield objects to `ctx`. Await local async functions from the
+snippet. In long loops check `ct` and emit `print(...)` or `ctx.Progress(...)`
+at least every 30 seconds to avoid inactivity cancellation; set
+`-TimeoutSeconds` for the expected total duration.
 
 ```csharp
-var scene = SceneManager.GetActiveScene();
 ctx.Progress("Inspecting scene", 0.25f);
 await ctx.WaitFrames(2);
 ct.ThrowIfCancellationRequested();
-var rootNames = scene.GetRootGameObjects().Select(go => go.name).ToArray();
-printJson(new { scene = scene.name, rootNames });
-return $"Found {rootNames.Length} root objects";
+
+var scene = SceneManager.GetActiveScene();
+var roots = scene.GetRootGameObjects();
+printJson(new { scene = scene.name, rootCount = roots.Length });
 ```
 
 Use these `ctx` awaitables rather than `Task.Delay` when Unity API access must
