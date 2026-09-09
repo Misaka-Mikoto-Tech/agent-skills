@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string] $NameFilter
+)
 
 $ErrorActionPreference = 'Stop'
 $scriptUnderTest = Join-Path $PSScriptRoot 'locus-unity.ps1'
@@ -41,6 +43,10 @@ function Invoke-Test {
         [scriptblock] $Body
     )
 
+    if (-not [string]::IsNullOrWhiteSpace($NameFilter) -and $Name -notlike "*$NameFilter*") {
+        return
+    }
+
     try {
         & $Body
         $script:passed++
@@ -51,6 +57,26 @@ function Invoke-Test {
         Write-Host "FAIL $Name"
         Write-Host "  $($_.Exception.Message)"
     }
+}
+
+if (-not ('LocusUnityBridgeTests.BlockingTextReader' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+
+namespace LocusUnityBridgeTests
+{
+    public sealed class BlockingTextReader : TextReader
+    {
+        public override string ReadLine()
+        {
+            Thread.Sleep(10000);
+            return null;
+        }
+    }
+}
+'@
 }
 
 function New-TestUnityProject {
@@ -359,7 +385,11 @@ function Invoke-BridgeProcessWithCancel {
     Start-Sleep -Milliseconds $CancelDelayMilliseconds
     $process.StandardInput.WriteLine('cancel')
     $process.StandardInput.Close()
-    $process.WaitForExit()
+    if (-not $process.WaitForExit(10000)) {
+        $process.Kill($true)
+        $process.WaitForExit()
+        throw 'Cancelable bridge process did not exit within 10 seconds.'
+    }
     return [pscustomobject]@{
         ExitCode = $process.ExitCode
         Stdout = $stdoutTask.GetAwaiter().GetResult()
@@ -500,6 +530,18 @@ Invoke-Test 'computes the Locus native pipe hash' {
     Assert-Equal $actual 'locus_unity_native_b77b5670d55eab3d7294a562f9c5bd60' 'Pipe hash must match Locus'
 }
 
+Invoke-Test 'console input reader does not block the pipe event loop' {
+    $blockingInput = [LocusUnityBridgeTests.BlockingTextReader]::new()
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $inputReader = Start-LocusConsoleInputReader -SourceReader $blockingInput
+    try {
+        Assert-Equal ($stopwatch.ElapsedMilliseconds -lt 250) $true 'Starting a console reader must return before its input produces a line'
+    }
+    finally {
+        $inputReader.Dispose()
+    }
+}
+
 Invoke-Test 'ignores an unsolicited event before the matching response' {
     $pipeName = 'locus_skill_test_' + [guid]::NewGuid().ToString('N')
     $job = Start-MockPipeServer -PipeName $pipeName -Mode 'event-then-ok'
@@ -612,11 +654,12 @@ Invoke-Test 'execute follow-progress accepts stdin cancellation on its existing 
         New-Item -ItemType File -Path (Join-Path $editor 'Locus.Editor.asmdef') -Force | Out-Null
         New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $markerDirectory 'NativeBridge.enabled') -Value $pipeName -Encoding utf8NoBOM
-        $job = Start-MockPipeServer -PipeName $pipeName -Mode 'execute-progress-then-cancel'
+        $job = Start-MockPipeServer -PipeName $pipeName -Mode 'execute-cancel'
         Start-Sleep -Milliseconds 150
 
         $result = Invoke-BridgeProcessWithCancel `
             -WorkingDirectory $project `
+            -CancelDelayMilliseconds 2200 `
             -BridgeArguments @(
                 '-Command', 'execute',
                 '-ProjectPath', $project,

@@ -321,6 +321,75 @@ function Invoke-LocusRequest {
     }
 }
 
+function Start-LocusConsoleInputReader {
+    [CmdletBinding()]
+    param(
+        [System.IO.TextReader] $SourceReader = [Console]::In
+    )
+
+    if (-not ('LocusUnityBridge.ConsoleLineReader' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Threading;
+
+namespace LocusUnityBridge
+{
+    public sealed class ConsoleLineReader : IDisposable
+    {
+        private readonly TextReader input;
+        private readonly ConcurrentQueue<string> lines = new ConcurrentQueue<string>();
+        private readonly Thread worker;
+        private volatile bool disposed;
+
+        public ConsoleLineReader(TextReader input)
+        {
+            this.input = input ?? TextReader.Null;
+            worker = new Thread(ReadLoop);
+            worker.IsBackground = true;
+            worker.Name = "Locus console input reader";
+            worker.Start();
+        }
+
+        private void ReadLoop()
+        {
+            try
+            {
+                while (!disposed)
+                {
+                    string line = input.ReadLine();
+                    if (line == null)
+                        return;
+                    if (!disposed)
+                        lines.Enqueue(line);
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (IOException)
+            {
+            }
+        }
+
+        public bool TryDequeue(out string line)
+        {
+            return lines.TryDequeue(out line);
+        }
+
+        public void Dispose()
+        {
+            disposed = true;
+        }
+    }
+}
+'@
+    }
+
+    return [LocusUnityBridge.ConsoleLineReader]::new($SourceReader)
+}
+
 function Invoke-LocusExecute {
     [CmdletBinding()]
     param(
@@ -361,6 +430,7 @@ function Invoke-LocusExecute {
     )
     $reader = $null
     $writer = $null
+    $inputReader = $null
 
     try {
         try {
@@ -381,11 +451,30 @@ function Invoke-LocusExecute {
         $nextProgressAt = if ($FollowProgress) { $intervalMilliseconds } else { $null }
         $lastProgressSignature = $null
         $readTask = $null
-        $cancelInputTask = if ($AcceptCancel) { [Console]::In.ReadLineAsync() } else { $null }
+        $inputReader = if ($AcceptCancel) { Start-LocusConsoleInputReader } else { $null }
         $cancelRequested = $false
         $cancelRequestId = $null
 
         while ($stopwatch.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
+            if ($null -ne $inputReader) {
+                $control = $null
+                while ($inputReader.TryDequeue([ref] $control)) {
+                    if ($null -ne $control -and
+                        [string]::Equals($control.Trim(), 'cancel', [StringComparison]::OrdinalIgnoreCase) -and
+                        -not $cancelRequested) {
+                        $cancelRequested = $true
+                        $cancelRequestId = 'locus-skill-' + [guid]::NewGuid().ToString('N')
+                        $cancelRequest = [ordered]@{
+                            id = $cancelRequestId
+                            type = 'cancel_execute_code'
+                            message = $executionId
+                        } | ConvertTo-Json -Compress -Depth 20
+                        $writer.WriteLine($cancelRequest)
+                    }
+                    $control = $null
+                }
+            }
+
             $elapsed = $stopwatch.ElapsedMilliseconds
             if ($FollowProgress -and $elapsed -ge $nextProgressAt) {
                 $progressRequest = [ordered]@{
@@ -407,38 +496,17 @@ function Invoke-LocusExecute {
                 $untilProgress = [Math]::Max(1, [int] ($nextProgressAt - $stopwatch.ElapsedMilliseconds))
                 $waitMilliseconds = [Math]::Min($remaining, $untilProgress)
             }
+            if ($null -ne $inputReader) {
+                # Keep draining the background console reader while no pipe frame arrives.
+                $waitMilliseconds = [Math]::Min($waitMilliseconds, 100)
+            }
             $waitTasks = @(
                 [System.Threading.Tasks.Task] $readTask,
                 [System.Threading.Tasks.Task]::Delay($waitMilliseconds)
             )
-            if ($null -ne $cancelInputTask) {
-                $waitTasks += [System.Threading.Tasks.Task] $cancelInputTask
-            }
             $completed = [System.Threading.Tasks.Task]::WhenAny(
                 [System.Threading.Tasks.Task[]] $waitTasks
             ).GetAwaiter().GetResult()
-
-            if ($completed -eq $cancelInputTask) {
-                $control = $cancelInputTask.GetAwaiter().GetResult()
-                $cancelInputTask = $null
-                if ($null -ne $control -and
-                    [string]::Equals($control.Trim(), 'cancel', [StringComparison]::OrdinalIgnoreCase)) {
-                    if (-not $cancelRequested) {
-                        $cancelRequested = $true
-                        $cancelRequestId = 'locus-skill-' + [guid]::NewGuid().ToString('N')
-                        $cancelRequest = [ordered]@{
-                            id = $cancelRequestId
-                            type = 'cancel_execute_code'
-                            message = $executionId
-                        } | ConvertTo-Json -Compress -Depth 20
-                        $writer.WriteLine($cancelRequest)
-                    }
-                }
-                if ($null -ne $control) {
-                    $cancelInputTask = [Console]::In.ReadLineAsync()
-                }
-                continue
-            }
 
             if ($completed -ne $readTask) {
                 continue
@@ -539,6 +607,9 @@ function Invoke-LocusExecute {
         throw "Timed out waiting for 'execute_code' response from '\\.\pipe\$bareName'."
     }
     finally {
+        if ($null -ne $inputReader) {
+            $inputReader.Dispose()
+        }
         if ($null -ne $reader) {
             $reader.Dispose()
         }
