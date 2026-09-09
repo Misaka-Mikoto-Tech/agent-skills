@@ -118,6 +118,30 @@ necessary. Rendering does not modify the source asset.
 Use `execute` only when the curated operations do not answer the task. Prefer a
 multi-line `-CodeFile` and `print(...)` or `printJson(...)` for returned data.
 
+`-CodeFile` content becomes the body of a Locus-generated entry method, not an
+independent C# file. Write direct statements and, when useful, local functions;
+async local functions must be awaited from the snippet. Do not declare `Main`,
+`class`, `struct`, or `namespace`. The injected `print`, `printJson`, `clear`,
+`ctx`, and `ct` are available directly; a non-null `return` value is printed.
+
+Top-level `await` is supported. For Unity work that must span editor frames,
+prefer `await ctx.wait`, `ctx.WaitFrames(...)`, `ctx.WaitSeconds(...)`, or
+`ctx.WaitUntil(...)`; their continuations run from `EditorApplication.update`.
+Check `ct` (the injected cancellation token) in long loops. Emit `print(...)`
+or `ctx.Progress(...)` at least every 30 seconds, otherwise Locus cancels the
+execution for inactivity. Set `-TimeoutSeconds` for the expected total duration.
+
+```csharp
+print("Waiting for the editor");
+await ctx.WaitFrames(3);
+ctx.Progress("Inspecting scene", 0.5f);
+ct.ThrowIfCancellationRequested();
+print("Ready");
+```
+
+Use these `ctx` awaitables rather than `Task.Delay` when Unity API access must
+continue after the wait.
+
 ```powershell
 & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $locusBridge `
     -Command execute -ProjectPath 'E:\Source\SomeUnityProject' `
