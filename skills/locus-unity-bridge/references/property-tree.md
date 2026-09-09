@@ -1,6 +1,6 @@
 # Property Tree requests
 
-Use this read-only interface to inspect Unity serialized properties without
+Use these read-only requests to inspect Unity serialized properties without
 writing ad-hoc C#. These are `send` message types, not top-level `-Command`
 values. Pass each JSON payload as `-Message` to the client's `send` command.
 
@@ -75,8 +75,3 @@ request's `target.propertyPath`:
 
 If the response is `truncated`, tighten the query rather than raising limits
 blindly.
-
-## Boundary
-
-`property_tree_write` and `property_tree_apply` can alter Unity serialized
-data. Do not use either without explicit user authorization for that change.

@@ -1,6 +1,6 @@
 ---
 name: locus-unity-bridge
-description: Use when an agent needs to inspect or control a real Unity Editor through Locus, especially when Unity MCP is unavailable, a project may lack the Locus package, named-pipe discovery is needed, C# must be executed, or Unity scripts must be recompiled.
+description: Use when an agent needs to inspect or control a real Unity Editor through Locus, especially when Unity MCP is unavailable, named-pipe discovery is needed, C# must be executed, or Unity scripts must be recompiled.
 ---
 
 # Locus Unity Bridge
@@ -12,8 +12,9 @@ Do not rewrite its named-pipe client. Always pass the exact Unity root to
 ## Safety
 
 `execute` can run arbitrary C# in Unity. Use it only for the project and task
-the user authorized. Do not install Locus, create its marker, launch or close
-Unity, or modify a project merely to connect the bridge.
+the user authorized. A connected bridge requires Locus to already be installed
+and enabled in the target project. Do not install or repair Locus, create its
+marker, launch or close Unity, or modify a project merely to connect the bridge.
 
 ## Command map
 
@@ -29,6 +30,11 @@ message type as a value for `-Command`.
 | `render-preview` | Save a Prefab/model preview as a local PNG. |
 | `execute` | Run an authorized C# snippet. |
 | `recompile` | Request compilation and wait through domain reload. |
+
+All commands except `recompile` use `-TimeoutSeconds` (default `10`, range
+`1`–`600`) for their final pipe response. Increase it only for an operation
+that is expected to take longer. `recompile` instead uses its dedicated timeout
+options below.
 
 Resolve the client once:
 
@@ -46,13 +52,13 @@ $locusBridge = Join-Path $env:USERPROFILE '.agents\skills\locus-unity-bridge\scr
 | Status | Next action |
 |---|---|
 | `connected` | Continue with an operation. |
-| `package_missing` | Report the expected `Packages/com.farlocus.locus`; request approval before installation. |
-| `package_invalid` | Report the incomplete installation path. |
+| `package_missing` | Report the expected `Packages/com.farlocus.locus`; installation is outside this skill. |
+| `package_invalid` | Report the incomplete installation path; repair is outside this skill. |
 | `bridge_not_enabled` | Ask the user to enable/connect Locus for this project. |
 | `editor_unreachable` | Verify that the matching project is open in Unity and Locus is active. |
 
-The probe recognizes canonical and legacy package layouts, plus a live
-computed pipe when `LOCUS_UNITY_NATIVE_BRIDGE=1` is enabled.
+The probe recognizes canonical and legacy package layouts. It uses a bridge
+marker when present, otherwise it computes the project-specific pipe name.
 
 ## 2. Inspect with `send`
 
@@ -75,9 +81,7 @@ parse a nested JSON payload from the envelope's `message` field when noted.
 | Inspect one found scene/Prefab object | `read_yaml` | Use the `object_path` from search; see the same reference. |
 | Capture Game, Scene, or Editor window | `capture_viewport` | JSON below. |
 
-`property_tree_write` and `property_tree_apply` modify serialized data; never
-use them as diagnostics. `get_console_text` is a large compatibility snapshot,
-not a default query.
+`get_console_text` is a large compatibility snapshot, not a default query.
 
 For `capture_viewport`, set `target` to `game`, `scene`, or `editor_window`.
 `maxLongEdge` defaults to `1280`, accepts `0` for source size, and is capped at
