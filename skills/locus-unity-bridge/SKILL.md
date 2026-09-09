@@ -156,6 +156,12 @@ continue after the wait.
     -Command execute -ProjectPath 'E:\Source\SomeUnityProject' `
     -CodeFile 'C:\Temp\inspect-scene.cs' -TimeoutSeconds 30
 
+# Opt in only when intermediate async progress is useful.
+& pwsh.exe -NoLogo -NoProfile -NonInteractive -File $locusBridge `
+    -Command execute -ProjectPath 'E:\Source\SomeUnityProject' `
+    -CodeFile 'C:\Temp\inspect-scene.cs' -TimeoutSeconds 60 `
+    -FollowProgress -ProgressIntervalSeconds 2
+
 & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $locusBridge `
     -Command recompile -ProjectPath 'E:\Source\SomeUnityProject' `
     -TimeoutSeconds 10 -RecompileTimeoutSeconds 120
@@ -165,6 +171,11 @@ continue after the wait.
 
 - The pipe can emit `unity-editor-update` events before the matching response;
   the client already waits for the envelope whose `reply_to` matches its request.
+- `execute -FollowProgress` is opt-in for long async snippets. It checks
+  progress every 2 seconds by default and writes only changed revisions as
+  compact `<locus-execute-progress>{...}</locus-execute-progress>` lines before
+  the usual final JSON response. The compact record excludes `sourceText`; do
+  not use it for short operations or as a substitute for final output.
 - Do not target the Locus source checkout when the requested Unity project is
   elsewhere.
 - Do not assume Unity MCP is required; this skill uses Locus directly.

@@ -66,7 +66,7 @@ function Start-MockPipeServer {
         [string] $PipeName,
 
         [Parameter(Mandatory)]
-        [ValidateSet('event-then-ok', 'error', 'thumbnail', 'preview')]
+        [ValidateSet('event-then-ok', 'error', 'thumbnail', 'preview', 'execute-with-progress')]
         [string] $Mode
     )
 
@@ -112,6 +112,36 @@ function Start-MockPipeServer {
                     reply_to = $request.id
                     ok = $true
                     message = 'pong'
+                } | ConvertTo-Json -Compress
+                $writer.WriteLine($response)
+            }
+            elseif ($Mode -eq 'execute-with-progress') {
+                if ($request.type -ne 'execute_code') {
+                    throw "Expected execute_code, got '$($request.type)'"
+                }
+
+                for ($i = 0; $i -lt 2; $i++) {
+                    $progressRequest = $reader.ReadLine() | ConvertFrom-Json
+                    if ($progressRequest.type -ne 'execute_code_progress') {
+                        throw "Expected execute_code_progress, got '$($progressRequest.type)'"
+                    }
+
+                    $progress = [ordered]@{
+                        id = 'progress-response-' + $i
+                        type = 'response'
+                        reply_to = $progressRequest.id
+                        ok = $true
+                        message = '{"active":true,"title":"Mock progress","info":"waiting","progress":0.5,"revision":7,"source":"api","sourceText":"sensitive snippet source"}'
+                    } | ConvertTo-Json -Compress
+                    $writer.WriteLine($progress)
+                }
+
+                $response = [ordered]@{
+                    id = 'response-1'
+                    type = 'response'
+                    reply_to = $request.id
+                    ok = $true
+                    message = 'finished'
                 } | ConvertTo-Json -Compress
                 $writer.WriteLine($response)
             }
@@ -361,6 +391,50 @@ Invoke-Test 'ignores an unsolicited event before the matching response' {
         Wait-Job -Job $job -Timeout 3 | Out-Null
         Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
         Remove-Job -Job $job -Force
+    }
+}
+
+Invoke-Test 'execute follow-progress multiplexes requests on one connection and de-duplicates revisions' {
+    $project = New-TestUnityProject
+    $pipeName = 'locus_skill_test_' + [guid]::NewGuid().ToString('N')
+    $job = $null
+    try {
+        $editor = Join-Path $project 'Packages\com.farlocus.locus\Editor'
+        $markerDirectory = Join-Path $project 'Library\Locus'
+        New-Item -ItemType Directory -Path $editor -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $editor 'Locus.Editor.asmdef') -Force | Out-Null
+        New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $markerDirectory 'NativeBridge.enabled') -Value $pipeName -Encoding utf8NoBOM
+        $job = Start-MockPipeServer -PipeName $pipeName -Mode 'execute-with-progress'
+        Start-Sleep -Milliseconds 150
+
+        $result = Invoke-BridgeProcess `
+            -WorkingDirectory $project `
+            -BridgeArguments @(
+                '-Command', 'execute',
+                '-ProjectPath', $project,
+                '-Code', 'print("mock")',
+                '-FollowProgress',
+                '-ProgressIntervalSeconds', '1',
+                '-TimeoutSeconds', '5'
+            )
+
+        Assert-Equal $result.ExitCode 0 'Follow-progress execute should succeed'
+        Assert-Equal ([regex]::Matches($result.Stdout, '<locus-execute-progress>').Count) 1 'Unchanged progress revision should not repeat'
+        Assert-Equal $result.Stdout.Contains('"revision":7') $true 'Progress output should contain the snapshot'
+        Assert-Equal $result.Stdout.Contains('sensitive snippet source') $false 'Progress output should not include source code text'
+        Assert-Equal $result.Stdout.Contains('"message": "finished"') $true 'Final execute response should still be emitted'
+    }
+    finally {
+        if ($null -ne $job) {
+            Wait-Job -Job $job -Timeout 5 | Out-Null
+            if ($job.State -eq 'Running') {
+                Stop-Job -Job $job | Out-Null
+            }
+            Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $job -Force
+        }
+        Remove-Item -LiteralPath $project -Recurse -Force
     }
 }
 
