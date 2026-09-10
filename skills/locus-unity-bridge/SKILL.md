@@ -234,11 +234,12 @@ then returns `{ "Status": "canceled", ... }`. This works with or without
 start a second Locus client to cancel a running execution. Cancellation is
 cooperative: snippets must await `ctx` or check `ct` in long-running code.
 
-For progress-driven cancellation, the process runner must stream stdout while
-keeping stdin writable; a launcher that only redirects/captures stdout can delay
-`Write-Host` progress until exit. Use a streaming terminal or PTY session, then
-read progress and write `cancel` to that same session. Keep `-NonInteractive`.
-If cancellation input is unavailable, split the work into bounded execute calls.
+For progress-driven cancellation, the process runner must consume stdout
+incrementally while keeping stdin writable. Concurrently read progress records
+line by line, then write `cancel` to the same process's stdin when needed. A
+final-only capture such as waiting for `ReadToEndAsync()` cannot make a decision
+from progress before the process exits. Keep `-NonInteractive`. If cancellation
+input is unavailable, split the work into bounded execute calls.
 
 ## Transport notes
 
