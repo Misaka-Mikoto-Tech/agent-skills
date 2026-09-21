@@ -11,10 +11,13 @@ Do not rewrite its named-pipe client. Always pass the exact Unity root to
 
 ## Safety
 
-`execute` can run arbitrary C# in Unity. Use it only for the project and task
-the user authorized. A connected bridge requires Locus to already be installed
-and enabled in the target project. Do not install or repair Locus, create its
-marker, launch or close Unity, or modify a project merely to connect the bridge.
+`execute` can run arbitrary C# in Unity, and the property-tree write messages
+(`property_tree_write`, `property_tree_apply`) mutate the user's project. Use
+any of them only for the project and task the user authorized, and prefer the
+read path when the task is inspection. A connected bridge requires Locus to
+already be installed and enabled in the target project. Do not install or
+repair Locus, create its marker, launch or close Unity, or modify a project
+merely to connect the bridge.
 
 ## Command map
 
@@ -92,6 +95,40 @@ a PNG path under `Library/Locus/Screenshots/`; report it and do not delete it.
 {"target":"game","maxLongEdge":1280}
 ```
 
+### Writing properties (mutating — confirm authorization first)
+
+Everything above is read-only. Unity's property write path is a separate,
+explicitly authorized step:
+
+| Need | `-MessageType` | `-Message` |
+|---|---|---|
+| Set one existing serialized property | `property_tree_write` | `{"target":{"kind":"selection","propertyPath":"m_Speed"},"valueJson":"12.5"}` |
+| Commit several writes together | `property_tree_apply` | `{"writes":[<write request>, ...]}` |
+
+A write reuses the read targets (`selection`, `asset`, `scriptableobject`,
+`material`, `gameobject`, `component`) plus the `target.propertyPath` reported
+by a preceding read or discover. `valueJson` is the JSON-encoded value.
+`mode: "preview"` applies a transient drag preview instead of committing; omit
+`mode` for a real commit. `bindingId` is only echoed back and may be omitted.
+
+`property_tree_write` records Undo, marks the object and scene dirty, and
+returns a fresh read plus a `beforeSnapshot`. **It does not save the asset** —
+`live` writes keep Property Tree commit semantics, so the asset can still be
+waiting for Unity to save it. Never report a write as persisted without a
+separate save step, and say so when the file is still dirty.
+
+Writes that must be persisted, revision-checked, or correct against Prefab
+inheritance use a different surface: `asset_api` (transaction id,
+`expected_revision`, `dependencies`, `persist: "disk"`, array operations,
+batches up to 256 files / 10,000 operations). That is the transactional YAML
+backend, not a raw file writer; treat it as its own task and confirm scope with
+the user before using it.
+
+Do not hand-edit `.unity`/`.prefab` YAML as a substitute for either path: exact
+fileIDs/GUIDs, Prefab variant override/revert topology, import ordering, and
+stale-revision rejection are precisely what the transactional layer exists to
+handle.
+
 ## 3. Use a top-level operation
 
 ### Asset images
@@ -142,9 +179,20 @@ exactly one. Prefer `print(...)` or `printJson(...)` for returned data.
   use `await ctx...` for waits that continue with Unity API access.
 - `-TimeoutSeconds` only stops this client from waiting; it does not stop Unity
   code already running. Treat it as a wait limit, not a recovery mechanism.
+- The client can cancel a running snippet only when `-AcceptCancel` is set and
+  its stdin stays writable. It then sends `cancel_execute_code` carrying the
+  execution id injected into the snippet (`//__LOCUS_EXECUTION_ID__:<id>`, the
+  same id `execute_code_progress` uses). Without `-AcceptCancel` there is no
+  cancel path, so a timed-out snippet simply keeps running.
 - Locus also has a 30-second inactivity watchdog. It requests cancellation and
   returns a timeout, but cannot preempt code already blocking Unity's main
   thread. Do not treat that watchdog as a hard stop.
+- The watchdog only fires on silence, so a snippet that keeps emitting `print`
+  or `ctx.Progress(...)` can run indefinitely.
+- Never re-send an `execute` merely because it timed out: the snippet may still
+  be running and would then execute a second time. Use `-AcceptCancel` when you
+  may need to stop it, keep snippets bounded and repeat-safe, and tell the user
+  when a snippet might still be live instead of retrying silently.
 
 | Symbol | Purpose |
 |---|---|
@@ -240,6 +288,31 @@ line by line, then write `cancel` to the same process's stdin when needed. A
 final-only capture such as waiting for `ReadToEndAsync()` cannot make a decision
 from progress before the process exits. Keep `-NonInteractive`. If cancellation
 input is unavailable, split the work into bounded execute calls.
+
+## Invocation pitfalls (Windows / PowerShell)
+
+`pwsh.exe -File <script> -Message '<json>'` mangles the argument on the way to
+the native process: internal `"` are stripped (`JSON parse error: Missing a
+name for object member`) and an empty `-Message ''` is dropped entirely
+(`Missing an argument for parameter 'Message'`). Invoke the script in the
+current PowerShell session instead, so the parameters bind as real objects:
+
+```powershell
+$locusBridge = Join-Path $env:USERPROFILE '.agents\skills\locus-unity-bridge\scripts\locus-unity.ps1'
+& $locusBridge -Command send -ProjectPath 'E:\Source\SomeUnityProject' `
+    -MessageType unity_get_console_log -Message '{"levels":["error","warn"],"limit":15}'
+
+# No-payload messages: '""' also works, but '' only works when called in-process.
+& $locusBridge -Command send -ProjectPath 'E:\Source\SomeUnityProject' -MessageType status -Message ''
+```
+
+Use `pwsh.exe -File` only for calls whose arguments contain no quotes and no
+empty strings. Note `& $locusBridge ... 2>&1 | Out-String` wraps errors in
+CLIXML noise; read the raw output when diagnosing.
+
+A transient `managed_reloading` failure means Unity is compiling or in a domain
+reload, not that the bridge is broken. Retry `status` every few seconds, or use
+`recompile` to drive the reload deliberately, and only then report a problem.
 
 ## Transport notes
 
