@@ -99,11 +99,42 @@ Run it with:
 pwsh.exe -NoLogo -NoProfile -NonInteractive -File script.ps1
 ```
 
-If an outer PowerShell process invokes another PowerShell process with `-Command`, the outer process expands `$variables` before the child process sees the script. This breaks inner snippets such as `$p = '...'` unless the outer command string is single-quoted:
+If an outer PowerShell process invokes another PowerShell process with `-Command`, two transformations hit the inner script:
+
+1. The outer process expands `$variables` before the child process sees the script, so the outer command string must be single-quoted when the inner script contains `$p`, `$env:...`, `$PSVersionTable`, or similar.
+2. When the outer process is Windows PowerShell 5.1, the inner double quotes do not survive the command line it rebuilds for the child. PowerShell 7.3+ exposes the equivalent native argument passing setting as `$PSNativeCommandArgumentPassing`; read it in the outer host you actually invoke from. The child then parses an unquoted bareword and reports it as a missing command.
+
+Measured on Windows 11, outer host spawning `pwsh` 7.6:
+
+| Outer host | Inner double-quoted value | Doubled inner single quotes | `-EncodedCommand` |
+| --- | --- | --- | --- |
+| Windows PowerShell 5.1 | Quotes lost; an unquoted value breaks on its first space (`C:\Data` parses as a command name) | Survives intact | Survives intact |
+| PowerShell 7 (`Windows` mode) | Survives intact | Survives intact | Survives intact |
 
 ```powershell
+# Fails when the outer host is Windows PowerShell 5.1
 pwsh.exe -NoLogo -NoProfile -Command '$p = "C:\Data Folder\input.txt"; Test-Path -LiteralPath $p'
+
+# Correct from either outer host
+pwsh.exe -NoLogo -NoProfile -Command '$p = ''C:\Data Folder\input.txt''; Test-Path -LiteralPath $p'
 ```
+
+A snippet verified only on a PowerShell 7 prompt therefore looks correct and still fails from 5.1, which is what `powershell.exe`, many agent harnesses, and Task Scheduler spawn. The failure is also value-dependent: `Set-Content`, `$env:`, and simple paths without spaces bind fine unquoted, so the same snippet passes on short test paths and breaks on real ones. Exercise the outer host you actually invoke from, or remove the question by writing the snippet to a file with its encoding set and running that:
+
+```powershell
+Set-Content -LiteralPath $scriptPath -Value $script -Encoding utf8
+pwsh.exe -NoLogo -NoProfile -NonInteractive -File $scriptPath
+```
+
+To hand a script to a child PowerShell across an outer host you do not control, without any quote arithmetic, pass it Base64-encoded as UTF-16LE:
+
+```powershell
+$script = '$p = "C:\Data Folder\input.txt"; Test-Path -LiteralPath $p'
+$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+pwsh.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded
+```
+
+The Base64 alphabet carries no characters that shell parsing reinterprets, so the script arrives byte-exact from either outer host. Use it when the script is generated at run time; prefer a `.ps1` file for anything a human should be able to read after a failure.
 
 Use a script file instead when both the outer and inner command need variables, paths, JSON, or pipelines.
 
@@ -641,6 +672,7 @@ Common symptoms:
 | A known cmdlet is missing | Module path or active shell differs from expectation | `$PSVersionTable`, `$env:PSModulePath`, `Get-Module -ListAvailable` |
 | A cmdlet parameter is rejected | PowerShell 5.1/7 parameter-set difference | `Get-Command <cmdlet> -Syntax` |
 | Native arguments with spaces/empty strings break | Arguments were flattened into one string | Use `& $exe @argList` or `ProcessStartInfo.ArgumentList` |
+| An inner `-Command` snippet works from PowerShell 7 but not from Windows PowerShell 5.1 | 5.1 dropped the inner double quotes while rebuilding the child's command line | Doubled inner single quotes, `-EncodedCommand`, or a `.ps1` file |
 
 When argument corruption occurs:
 
