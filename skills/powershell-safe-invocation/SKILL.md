@@ -101,11 +101,20 @@ Prefer `-File` over `-Command` for anything beyond a short, simple expression.
 
 Do not add `-ExecutionPolicy Bypass` unless execution policy is actually blocking a trusted script.
 
-When you must pass a script through `-Command` from an outer PowerShell process, remember that the outer shell expands `$variables` first. Use an outer single-quoted script string when the inner script contains `$p`, `$env:...`, `$PSVersionTable`, or similar:
+When you must pass a script through `-Command` from an outer PowerShell process, two separate transformations hit it:
+
+- The outer shell expands `$variables` first, so use an outer single-quoted script string when the inner script contains `$p`, `$env:...`, `$PSVersionTable`, or similar.
+- When the outer shell is Windows PowerShell 5.1, inner double quotes do not survive its argument rebuild, so the child receives the value unquoted. A plain path still binds, but any value containing a space breaks, and a quoted string where a statement begins is parsed as a command name. Use doubled single quotes for inner literal values:
 
 ```powershell
+# Outer 5.1 loses the inner quotes; $p is never assigned and the path parses as a command
 pwsh.exe -NoLogo -NoProfile -Command '$p = "C:\Data Folder\input.txt"; Test-Path -LiteralPath $p'
+
+# Correct from both Windows PowerShell 5.1 and PowerShell 7
+pwsh.exe -NoLogo -NoProfile -Command '$p = ''C:\Data Folder\input.txt''; Test-Path -LiteralPath $p'
 ```
+
+Outer single quotes protect `$`, doubled inner single quotes carry the literal. PowerShell 7 as the outer host preserves inner double quotes, so a snippet checked only on a PowerShell 7 prompt still fails under 5.1, the shell most agent tools and scheduled tasks spawn. To cross an outer host you cannot control without quote arithmetic, use `-EncodedCommand`; see `reference.md`.
 
 If the command has to cross multiple interpreters or wrappers, stop and write a `.ps1` file instead of stacking more quoting.
 
